@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	_ "github.com/joho/godotenv/autoload"
 
 	"go-store/internal/server"
 )
@@ -16,6 +19,22 @@ func gracefulShutdown(apiServer *http.Server, done chan bool) {
 	// Create context that listens for the interrupt signal from the OS.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Set output to file
+	logFileDest := os.Getenv("logFileDest")
+
+	if logFileDest == "" {
+		logFileDest = "F:/Work/go-store/logs/go-store.log"
+	}
+
+	file, err := os.OpenFile(logFileDest, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.SetOutput(file)
+
+	// Set log format flags
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	// Listen for the interrupt signal.
 	<-ctx.Done()

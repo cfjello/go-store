@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"time"
 
@@ -29,7 +28,9 @@ type service struct {
 }
 
 var (
-	dburl      = os.Getenv("BLUEPRINT_DB_URL")
+	// dburl = os.Getenv("SQLITE_DB_URL")
+	dburl = "file:F:/Sqlite3/go-store.db"
+	// dbInstance is a singleton instance of the database service.
 	dbInstance *service
 )
 
@@ -39,11 +40,24 @@ func New() Service {
 		return dbInstance
 	}
 
-	db, err := sql.Open("sqlite3", dburl)
+	// db, err := sql.Open("sqlite3", ":memory:") // Use in-memory database for testing
+	db, err := sql.Open("sqlite3", dburl) // Use this for a persistent database
+
 	if err != nil {
 		// This will not be a connection error, but a DSN parse error or
 		// another initialization error.
 		log.Fatal(err)
+	}
+
+	dropErr := dropTables(db)
+	if dropErr != nil {
+		log.Fatal(dropErr)
+	}
+	// Create tables after dropping existing ones
+	dbErr := createTables(db)
+
+	if dbErr != nil {
+		log.Fatal(dbErr)
 	}
 
 	dbInstance = &service{

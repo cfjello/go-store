@@ -19,11 +19,16 @@ type Server struct {
 }
 
 func NewServer() *http.Server {
+
 	port, _ := strconv.Atoi(os.Getenv("PORT"))
+
+	if port == 0 {
+		port = 9090 // Default port if not set in environment
+	}
+	// Initialize the database service
 	NewServer := &Server{
 		port: port,
-
-		db: database.New(),
+		db:   database.New(),
 	}
 
 	// Declare Server config
@@ -34,6 +39,8 @@ func NewServer() *http.Server {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
+
+	fmt.Printf("Server is running on port %d\n", NewServer.port)
 
 	return server
 }
