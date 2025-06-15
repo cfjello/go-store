@@ -1,4 +1,4 @@
-module go-store
+module github.com/cfjello/go-store
 
 go 1.22.1
 

@@ -9,13 +9,12 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 
-	"go-store/internal/database"
+	"github.com/cfjello/go-store/internal/database"
 )
 
 type Server struct {
 	port int
-
-	db database.Service
+	db   database.Service
 }
 
 func NewServer() *http.Server {

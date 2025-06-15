@@ -12,7 +12,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 
-	"go-store/internal/server"
+	"github.com/cfjello/go-store/internal/server"
 )
 
 func gracefulShutdown(apiServer *http.Server, done chan bool) {

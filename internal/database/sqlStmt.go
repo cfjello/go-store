@@ -31,14 +31,14 @@ type SqlStmt struct {
 
 func NewSqlStmt(db *sql.DB) (*SqlStmt, error) {
 	s := &SqlStmt{
-		MetaInsert:   "INSERT INTO meta (meta_type, meta_data) VALUES (?, ?) on conflict(meta_type) do update set meta_data = excluded.meta_data",
-		MetaSelect:   "SELECT meta_data FROM meta WHERE meta_type = ?",
-		MetaSelLast:  "SELECT meta_data FROM meta WHERE meta_type = ? ORDER BY rowid DESC LIMIT 1",
+		MetaInsert: "INSERT INTO meta (meta_type, meta_data) VALUES (?, ?)",
+		MetaSelect: "SELECT meta_data FROM meta WHERE meta_type = ? and meta_store_id = ?",
+		// MetaSelLast:  "SELECT meta_data FROM meta WHERE meta_type = ? ORDER BY rowid DESC LIMIT 1",
 		MetaUpdate:   "UPDATE meta SET meta_data = ? WHERE meta_type = ?",
 		DataInsert:   "INSERT INTO data (data_id, job_id, obj_type, obj_data, meta_data) VALUES (?, ?, ?, ?, ? )",
 		DataSelect:   "SELECT * FROM data WHERE data_id = ?",
 		DataIdByType: "SELECT data_id FROM data WHERE obj_type = ? and job_id LIKE ?",
-		DataSelLast:  "SELECT * FROM data ORDER BY rowid DESC LIMIT 1",
+		DataSelLast:  "SELECT * FROM data WHERE obj_type = ? ORDER BY data_id DESC LIMIT 1",
 		JobInsert:    "INSERT INTO job (job_id, data_id, job_data) VALUES (?, ?, ? )",
 		JobSelJob:    "SELECT * FROM job WHERE job_id = ?",
 		db:           db,

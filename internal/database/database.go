@@ -3,17 +3,27 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"time"
 
+	"github.com/cfjello/go-store/pkg/store"
 	_ "github.com/joho/godotenv/autoload"
 	_ "github.com/mattn/go-sqlite3"
 )
 
 // Service represents a service that interacts with a database.
 type Service interface {
+	SetMetaData(key string, meta store.MetaData) bool
+	GetMetaData(key string, storeId string) (store.MetaData, error)
+	Set(key string, data store.SetArgs) bool
+	Get(key string) (any, error)
+	initDB() error
+	createTables() error
+	dropTables() error
+
 	// Health returns a map of health status information.
 	// The keys and values in the map are service-specific.
 	Health() map[string]string
@@ -24,7 +34,8 @@ type Service interface {
 }
 
 type service struct {
-	db *sql.DB
+	db  *sql.DB
+	sql *SqlStmt
 }
 
 var (
@@ -60,11 +71,99 @@ func New() Service {
 		log.Fatal(dbErr)
 	}
 
-	dbInstance = &service{
-		db: db,
+	// Prepare SQL statements
+	sqlStmt, err := NewSqlStmt(db)
+	if err != nil {
+		log.Fatalf("Failed to prepare SQL statements: %v", err)
 	}
+
+	dbInstance = &service{
+		db:  db,
+		sql: sqlStmt,
+	}
+
 	return dbInstance
 }
+
+
+
+func (s *service) Set(key string, data store.SetArgs) bool {
+	// Implementation for setting data in the database
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ObjJSON, err := json.Marshal(data.Object)
+	if err != nil {
+		log.Printf("Failed to marshal object data for key: %s, error: %v", key, err)
+		return false
+	}
+
+	_, err = s.sql.dataInsStmt.ExecContext(ctx, key, data.JobID, data.SchemaKey, ObjJSON)
+
+	if err != nil {
+		log.Printf("Failed to set data for key: %s, error: %v", key, err)
+		return false
+	}
+	log.Printf("Data set for key: %s", key)
+	return true
+}
+
+func (s *service) Get(key string) (any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var data store.SetArgs
+	err := s.sql.dataSelStmt.QueryRowContext(ctx, key).Scan(&data.Key, &data.JobID, &data.SchemaKey, &data., &data.MetaData)
+	if err != nil {
+		log.Printf("Failed to get data for key: %s, error: %v", key, err)
+		return nil, err
+	}
+
+	// Unmarshal the JSON object data
+	var obj any
+	err = json.Unmarshal(data.ObjData, &obj)
+	if err != nil {
+		log.Printf("Failed to unmarshal object data for key: %s, error: %v", key, err)
+		return nil, err
+	}
+
+	return obj, nil
+}
+
+func (s *service) SetMetaData(key string, meta store.MetaData) bool {
+	// Implementation for setting metadata in the database
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		log.Printf("Failed to marshal meta data for key: %s, error: %v", key, err)
+		return false
+	}
+	/*
+	storeId := meta.StoreID
+	if storeId == "" {
+		storeId = "0000" // Use a default store ID if not provided
+	}
+	*/
+	s.sql.metaInsStmt.ExecContext(ctx, key, meta)
+	log.Printf("Meta data set for key: %s", key)
+	return true
+}
+
+func (s *service) GetMetaData(key string, storeId string) (store.MetaData, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var meta store.MetaData
+	err := s.sql.metaSelStmt.QueryRowContext(ctx, key).Scan(&meta)
+	if err != nil {
+		log.Printf("Failed to get meta data for key: %s, error: %v", key, err)
+		return store.MetaData{}, err
+	}
+	return meta, nil
+}
+
+
 
 // Health checks the health of the database connection by pinging the database.
 // It returns a map with keys indicating various health statistics.
