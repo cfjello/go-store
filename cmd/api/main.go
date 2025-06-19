@@ -21,7 +21,11 @@ func gracefulShutdown(apiServer *http.Server, done chan bool) {
 	defer stop()
 
 	// Set output to file
-	logFileDest := os.Getenv("logFileDest")
+	logFileDest := ""
+	/*
+		os.Getenv("LOG_FILE_DEST")
+		fmt.Printf("logFileDest: %s\n", logFileDest)
+	*/
 
 	if logFileDest == "" {
 		logFileDest = "F:/Work/go-store/logs/go-store.log"

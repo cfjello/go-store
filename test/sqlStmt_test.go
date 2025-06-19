@@ -2,18 +2,21 @@ package test
 
 import (
 	"testing"
+
+	"github.com/cfjello/go-store/pkg/sql"
+	"github.com/cfjello/go-store/pkg/util"
 )
 
 func TestStoreAndFetchMetaData(t *testing.T) {
 	metaData := KvMetaData{
-		Key:       monotonicUlid(),
+		Key:       "testKey",
 		Oper:      "set",
 		Init:      false,
-		StoreId:   monotonicUlid(),
-		JobId:     monotonicUlid(),
+		StoreId:   util.Ulid(),
+		JobId:     util.Ulid(),
 		SchemaKey: "TEST",
 		Check:     false,
-		DeleteTs:  monotonicUlid(),
+		DeleteTs:  util.Ulid(),
 	}
 
 	res, err := db.Exec(sql.META_INSERT, metaData.Key, metaData)

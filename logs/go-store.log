@@ -1,3 +1,19 @@
 2025/06/13 00:15:43 main.go:43: shutting down gracefully, press Ctrl+C again to force
 2025/06/13 00:15:43 main.go:54: Server exiting
 2025/06/13 00:15:43 main.go:77: Graceful shutdown complete.
+2025/06/19 19:37:38 database.go:215: Disconnecting from database: file:F:/Sqlite3/go-store.db
+2025/06/19 19:37:38 main.go:43: shutting down gracefully, press Ctrl+C again to force
+2025/06/19 19:37:38 main.go:54: Server exiting
+2025/06/19 19:37:38 main.go:77: Graceful shutdown complete.
+2025/06/19 19:44:43 main.go:43: shutting down gracefully, press Ctrl+C again to force
+2025/06/19 19:44:43 database.go:215: Disconnecting from database: file:F:/Sqlite3/go-store.db
+2025/06/19 19:44:43 main.go:54: Server exiting
+2025/06/19 19:44:43 main.go:77: Graceful shutdown complete.
+2025/06/19 19:47:47 main.go:43: shutting down gracefully, press Ctrl+C again to force
+2025/06/19 19:47:47 database.go:215: Disconnecting from database: file:F:/Sqlite3/go-store.db
+2025/06/19 19:47:47 main.go:54: Server exiting
+2025/06/19 19:47:47 main.go:77: Graceful shutdown complete.
+2025/06/19 21:07:51 database.go:215: Disconnecting from database: file:F:/Sqlite3/go-store.db
+2025/06/19 21:07:51 main.go:46: shutting down gracefully, press Ctrl+C again to force
+2025/06/19 21:07:51 main.go:57: Server exiting
+2025/06/19 21:07:51 main.go:80: Graceful shutdown complete.

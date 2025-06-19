@@ -6,7 +6,8 @@ type Config struct {
 	MonitorDefaults MonitorDefaults `json:"monitorDefaults"`
 	KvDatabase      KvDatabase      `json:"kvDatabase"`
 	Sqlite3         Sqlite3         `json:"sqlite3"`
-	Logs            Logs            `json:"logs"`
+	// Logs            Logs            `json:"logs"`
+	DefaultEnv map[string]string `json:"defaultEnv"`
 }
 
 // NodeConfig represents node configuration settings
@@ -65,8 +66,12 @@ func DefaultConfig() Config {
 			Flags: ";PRAGMA journal_mode=WAL;",
 			File:  "F:/sqlite3/go-store.db",
 		},
-		Logs: Logs{
-			StoreLogDir: "C:/Work/logs",
+		DefaultEnv: map[string]string{
+			"PORT":          "9090",
+			"APP_ENV":       "local",
+			"SQLITE_DB_URL": "file:F:/Sqlite3/go-store.db",
+			"LOG_FILE_DEST": "file:F:/Work/go-store/logs/go-store.log",
+			"CGO_ENABLED":   "1",
 		},
 	}
 }

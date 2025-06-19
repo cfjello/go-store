@@ -32,7 +32,7 @@ type SqlStmt struct {
 func NewSqlStmt(db *sql.DB) (*SqlStmt, error) {
 	s := &SqlStmt{
 		MetaInsert: "INSERT INTO meta (meta_type, meta_data) VALUES (?, ?)",
-		MetaSelect: "SELECT meta_data FROM meta WHERE meta_type = ? and meta_store_id = ?",
+		MetaSelect: "SELECT meta_data FROM meta WHERE meta_type = ?",
 		// MetaSelLast:  "SELECT meta_data FROM meta WHERE meta_type = ? ORDER BY rowid DESC LIMIT 1",
 		MetaUpdate:   "UPDATE meta SET meta_data = ? WHERE meta_type = ?",
 		DataInsert:   "INSERT INTO data (data_id, job_id, obj_type, obj_data, meta_data) VALUES (?, ?, ?, ?, ? )",

@@ -21,3 +21,5 @@ func ULIDGenerator() func() string {
 		return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 	}
 }
+
+var Ulid = ULIDGenerator()
