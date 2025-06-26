@@ -1,17 +1,22 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/cfjello/go-store/pkg/dynReflect"
+)
 
 // MetaData represents metadata about stored objects
 type MetaData struct {
-	Key       string `json:"key"`
-	Init      bool   `json:"init"`
-	Oper      string `json:"oper"`
-	StoreID   string `json:"storeId"`
-	JobID     string `json:"jobId"`
-	Check     bool   `json:"check"`
-	SchemaKey string `json:"schemaKey"`
-	SoftDel   string `json:"deleted,omitempty"`
+	Key  string `json:"key"`
+	Init bool   `json:"init"`
+	Oper string `json:"oper"`
+	// StoreID  string              `json:"storeId"`
+	// JobID    string              `json:"jobId"`
+	Check     bool                `json:"check"`
+	SoftDel   string              `json:"deleted,omitempty"`
+	SchemaKey string              `json:"schemaKey"`
+	TypeInfo  dynReflect.TypeInfo `json:"typeInfo,omitempty"`
 }
 
 // SetArgs represents arguments for the set operation
@@ -25,11 +30,12 @@ type SetArgs struct {
 
 // RegisterArgs represents arguments for the register operation
 type RegisterArgs struct {
-	Key    string      `json:"key"`
-	Schema interface{} `json:"schema,omitempty"`
-	Object interface{} `json:"object,omitempty"`
-	Init   bool        `json:"init,omitempty"`
-	Check  bool        `json:"check,omitempty"`
+	Key       string      `json:"key"`
+	Schema    interface{} `json:"schema,omitempty"`
+	Object    interface{} `json:"object,omitempty"`
+	Init      bool        `json:"init,omitempty"`
+	Check     bool        `json:"check,omitempty"`
+	SchemaKey string      `json:"schemaKey,omitempty"`
 }
 
 // PublishArgs represents arguments for the publish operation

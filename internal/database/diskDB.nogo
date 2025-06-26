@@ -1,0 +1,145 @@
+// package database
+
+/*
+	// _, err = loadDiskToMemory(db, dbUrl)
+	if err != nil {
+		log.Fatalf("Failed to load disk database into memory: %v", err)
+	}
+
+	// Set up graceful shutdown
+	go func() {
+		// Listen for interrupt signals
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+		// Block until a signal is received
+		<-c
+
+		log.Println("Shutting down database...")
+
+		// Save memory database to disk before closing
+		fileDB, err := sql.Open("sqlite3", dbUrl)
+		if err != nil {
+			log.Printf("Failed to open disk database for saving: %v", err)
+		} else {
+			err = saveMemoryToDisk(fileDB)
+			if err != nil {
+				log.Printf("Failed to save memory database to disk: %v", err)
+			}
+			fileDB.Close()
+		}
+		// Close the database connection
+		if dbInstance != nil {
+			if err := dbInstance.Close(); err != nil {
+				log.Printf("Error closing database: %v", err)
+			}
+		}
+		os.Exit(0)
+	}()
+*/
+/*
+	func loadDiskToMemory(memDB *sql.DB, dbFile string) (*sql.DB, error) {
+		// Attach disk DB
+		var err error
+		_, err = memDB.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS diskdb", dbFile))
+		if err != nil {
+			return nil, err
+		}
+
+		// Copy schema and data
+		_, err = memDB.Exec("BEGIN")
+		if err != nil {
+			return nil, err
+		}
+		_, err = memDB.Exec("SELECT sql FROM diskdb.sqlite_master WHERE type='table'")
+		if err != nil {
+			return nil, err
+		}
+		_, err = memDB.Exec("INSERT INTO main.mytable SELECT * FROM diskdb.mytable")
+		if err != nil {
+			return nil, err
+		}
+		_, err = memDB.Exec("COMMIT")
+		if err != nil {
+			return nil, err
+		}
+
+		// Detach disk DB
+		_, err = memDB.Exec("DETACH DATABASE diskdb")
+		if err != nil {
+			return nil, err
+		}
+		return memDB, nil
+	}
+
+func loadDiskToMemory(memDB *sql.DB, diskPath string) (*sql.DB, error) {
+
+		// Attach the disk database
+		_, err := memDB.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS diskdb", diskPath))
+		if err != nil {
+			return nil, err
+		}
+
+		// Get all CREATE TABLE statements
+		rows, err := memDB.Query("SELECT name, sql FROM diskdb.sqlite_master WHERE type='table'")
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var tableName, createSQL string
+			if err := rows.Scan(&tableName, &createSQL); err != nil {
+				return nil, err
+			}
+
+			// Recreate the table in memory
+			if _, err := memDB.Exec(createSQL); err != nil {
+				return nil, fmt.Errorf("creating table %s: %w", tableName, err)
+			}
+
+			log.Printf("Recreated table %s in memory", createSQL)
+
+			// Copy data from diskdb to memory
+			testSQL, err := memDB.Query(fmt.Sprintf("SELECT * FROM diskdb.%s", tableName))
+			if err != nil {
+				return nil, fmt.Errorf("checking data for table %s: %w", tableName, err)
+			} else if !testSQL.Next() {
+				log.Printf("No data found in table %s, skipping copy", tableName)
+				continue
+			} else {
+				log.Printf("Copying data for table %s", tableName)
+			}
+			defer testSQL.Close()
+			copySQL := fmt.Sprintf("INSERT INTO %s SELECT * FROM diskdb.%s", tableName, tableName)
+			if _, err := memDB.Exec(copySQL); err != nil {
+				return nil, fmt.Errorf("copying data for table %s: %w", tableName, err)
+			}
+		}
+
+		// Detach the disk database
+		_, err = memDB.Exec("DETACH DATABASE diskdb")
+		if err != nil {
+			return nil, err
+		}
+
+		return memDB, nil
+	}
+
+	func saveMemoryToDisk(fileDB *sql.DB) error {
+		_, err := fileDB.Exec("ATTACH DATABASE ':memory:' AS memdb")
+		if err != nil {
+			return err
+		}
+		_, err = fileDB.Exec("BEGIN")
+		if err != nil {
+			return err
+		}
+		_, err = fileDB.Exec("INSERT INTO main.sqlite_master SELECT * FROM memdb.sqlite_master")
+		if err != nil {
+			return err
+		}
+		_, err = fileDB.Exec("COMMIT")
+		return err
+	}
+*/

@@ -19,14 +19,27 @@ func initDB(db *sql.DB) error {
 }
 
 func createTables(db *sql.DB) error {
-	// Create data table
+
+	// Create meta table
 	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS meta (
+			meta_key TEXT,
+			schema_key TEXT NOT NULL,
+			meta_data TEXT NOT NULL,
+			PRIMARY KEY(meta_key)
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create data table
+	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS data (
 			data_id TEXT,
 			job_id TEXT,
-			obj_type TEXT,
 			obj_data JSON NOT NULL,
-			meta_data JSON NOT NULL,
+			meta_key TEXT NOT NULL ,
 			PRIMARY KEY(data_id )
 		)
 	`)
@@ -40,7 +53,7 @@ func createTables(db *sql.DB) error {
 		return err
 	}
 	_, err = db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_data_obj_type ON data(obj_type)
+		CREATE INDEX IF NOT EXISTS idx_data_meta_key ON data(meta_key)
 	`)
 	if err != nil {
 		return err
@@ -59,17 +72,6 @@ func createTables(db *sql.DB) error {
 		return err
 	}
 
-	// Create meta table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS meta (
-			meta_type TEXT,
-			meta_data JSON NOT NULL,
-			PRIMARY KEY(meta_type)
-		)
-	`)
-	if err != nil {
-		return err
-	}
 	// Create job table
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS job (

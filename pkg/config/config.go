@@ -67,11 +67,12 @@ func DefaultConfig() Config {
 			File:  "F:/sqlite3/go-store.db",
 		},
 		DefaultEnv: map[string]string{
-			"PORT":          "9090",
-			"APP_ENV":       "local",
-			"SQLITE_DB_URL": "file:F:/Sqlite3/go-store.db",
-			"LOG_FILE_DEST": "file:F:/Work/go-store/logs/go-store.log",
-			"CGO_ENABLED":   "1",
+			"PORT":            "9090",
+			"APP_ENV":         "local",
+			"SQLITE_DB_URL":   "file:F:/Sqlite3/go-store.db",
+			"SQLITE_DB_FLAGS": ";PRAGMA journal_mode=WAL;",
+			"LOG_FILE_DEST":   "file:F:/Work/go-store/logs/go-store.log",
+			"CGO_ENABLED":     "1",
 		},
 	}
 }

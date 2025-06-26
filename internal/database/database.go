@@ -11,18 +11,21 @@ import (
 	"time"
 
 	"github.com/cfjello/go-store/pkg/types"
+	"github.com/cfjello/go-store/pkg/util"
 
-	_ "github.com/joho/godotenv/autoload"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Service represents a service that interacts with a database.
-type Service interface {
+// StoreService represents a service that interacts with a database.
+
+/*
+type DBFunctions interface {
 	SetMeta(key string, meta types.MetaData) bool
 	GetMeta(key string, storeId string) (types.MetaData, error)
 	SetData(key string, data types.SetArgs) bool
 	GetData(key string) (any, error)
 	Close() error
+
 	// initDB() error
 	// createTables() error
 	// dropTables() error
@@ -35,35 +38,38 @@ type Service interface {
 	// It returns an error if the connection cannot be closed.
 
 }
+*/
 
-type service struct {
-	db  *sql.DB
-	sql *SqlStmt
+type DBService struct {
+	DB    *sql.DB
+	SQL   *SqlStmt
+	DbUrl string
 }
 
-var (
-	// dburl = os.Getenv("SQLITE_DB_URL")
-	dburl = "file:F:/Sqlite3/go-store.db"
-	// dbInstance is a singleton instance of the database service.
-	dbInstance *service
-)
+var dbInstance *DBService
 
-func New() Service {
+func New() *DBService {
 	// Reuse Connection
 	if dbInstance != nil {
 		return dbInstance
 	}
-	dburl := os.Getenv("SQLITE_DB_URL")
-	if dburl == "" {
-		// Default to a file-based SQLite database if not set
-		dburl = "file:F:/Sqlite3/go-store.db"
-	}
-	db, err := sql.Open("sqlite3", dburl) // Use this for a persistent database
+	util.SetEnv() // Load default environment variables
 
+	dbUrl := os.Getenv("SQLITE_DB_URL")
+	if dbUrl == "" {
+		// Default to a file-based SQLite database if not set
+		dbUrl = "file:F:/Sqlite3/go-store.db"
+	}
+	/*
+		dbFlags := os.Getenv("SQLITE_DB_FLAGS")
+		if dbFlags == "" {
+			// Default flags for SQLite database
+			dbFlags = ";PRAGMA journal_mode=OFF;"
+		}
+	*/
+	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
-		// This will not be a connection error, but a DSN parse error or
-		// another initialization error.
-		log.Fatal(err)
+		log.Fatalf("Failed to open in-memory database: %v", err)
 	}
 
 	dropErr := dropTables(db)
@@ -77,20 +83,22 @@ func New() Service {
 	}
 
 	// Prepare SQL statements
+
 	sqlStmt, err := NewSqlStmt(db)
 	if err != nil {
 		log.Fatalf("Failed to prepare SQL statements: %v", err)
 	}
 
-	dbInstance = &service{
-		db:  db,
-		sql: sqlStmt,
+	dbInstance = &DBService{
+		DbUrl: dbUrl,
+		DB:    db,
+		SQL:   sqlStmt,
 	}
 
 	return dbInstance
 }
 
-func (s *service) SetData(key string, value types.SetArgs) bool {
+func (s *DBService) SetData(key string, value types.SetArgs) bool {
 	// Implementation for setting data in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -101,29 +109,32 @@ func (s *service) SetData(key string, value types.SetArgs) bool {
 		return false
 	}
 
-	_, err = s.sql.dataInsStmt.ExecContext(ctx, key, value.JobID, value.SchemaKey, ObjJSON)
-
+	sqlRes, err := s.SQL.dataInsStmt.ExecContext(ctx, key, value.JobID, value.SchemaKey, ObjJSON)
 	if err != nil {
+		log.Printf("Failed to execute statement for key: %s, error: %v", key, err)
+		return false
+	}
+
+	rowsAffected, err := sqlRes.RowsAffected()
+	if err != nil || rowsAffected != 1 {
 		log.Printf("Failed to set data for key: %s, error: %v", key, err)
 		return false
 	}
-	log.Printf("Data set for key: %s", key)
+	// log.Printf("Data set for key: %s", key)
 	return true
 }
 
-func (s *service) GetData(key string) (any, error) {
+func (s *DBService) GetData(key string) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var data types.SetArgs
 	var dataJson []byte
-	err := s.sql.dataSelStmt.QueryRowContext(ctx, key).Scan(&data.Key, &data.JobID, &data.SchemaKey, &dataJson)
+	err := s.SQL.dataSelStmt.QueryRowContext(ctx, key).Scan(&data.Key, &data.JobID, &data.SchemaKey, &dataJson)
 	if err != nil {
 		log.Printf("Failed to get data for key: %s, error: %v", key, err)
 		return nil, err
 	}
-
-	// Unmarshal the JSON object data
 
 	err = json.Unmarshal(dataJson, &data.Object)
 	if err != nil {
@@ -134,44 +145,84 @@ func (s *service) GetData(key string) (any, error) {
 	return data.Object, nil
 }
 
-func (s *service) SetMeta(key string, value types.MetaData) bool {
+func (s *DBService) SetMeta(key string, value types.MetaData) bool {
 	// Implementation for setting metadata in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	metaJSON, err := json.Marshal(value)
 	if err != nil {
 		log.Printf("Failed to marshal meta data for key: %s, error: %v", key, err)
 		return false
 	}
 	meta := string(metaJSON)
-	s.sql.metaInsStmt.ExecContext(ctx, key, meta)
-	log.Printf("Meta data set for key: %s", key)
+	s.SQL.metaInsStmt.ExecContext(ctx, key, meta)
+	// log.Printf("Meta data set for key: %s", key)
 	return true
 }
 
-func (s *service) GetMeta(key string, storeId string) (types.MetaData, error) {
+func (s *DBService) GetMeta(key string, schemaKey string) (types.MetaData, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var meta types.MetaData
-	err := s.sql.metaSelStmt.QueryRowContext(ctx, key).Scan(&meta)
+	var metaJson []byte
+	if schemaKey == "" {
+		schemaKey = key
+	}
+	err := s.SQL.metaSelStmt.QueryRowContext(ctx, key, schemaKey).Scan(&metaJson)
 	if err != nil {
-		log.Printf("Failed to get meta data for key: %s, storeId: %s, error: %v", key, storeId, err)
+		// log.Printf("Failed to get meta data for key: %s, error: %v", key, err)
+		return types.MetaData{}, err
+	}
+
+	err = json.Unmarshal(metaJson, &meta)
+	if err != nil {
+		log.Printf("Failed to unmarshal object data for key: %s, error: %v", key, err)
 		return types.MetaData{}, err
 	}
 	return meta, nil
 }
 
+/*
+	func (s *DBService) GetMetaInit(key string) (bool, error) {
+		// Implementation for getting initial metadata
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		init := false
+		err := s.SQL.metaSelInitStmt.QueryRowContext(ctx, key).Scan(&init)
+		if err != nil {
+			log.Printf("Failed to get init meta data for key: %s, error: %v", key, err)
+
+		}
+		// If no row is found, return false for init
+		return init, err
+	}
+*/
+func (s *DBService) GetCurrStoreID(key string) (string, error) {
+	// Implementation for getting current store ID
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var storeID string
+	err := s.SQL.dataSelLastStmt.QueryRowContext(ctx, key).Scan(&storeID)
+	if err != nil {
+		log.Printf("failed to get current store ID for key: %s, error: %v", key, err)
+		return "", err
+	}
+	return storeID, nil
+}
+
 // Health checks the health of the database connection by pinging the database.
 // It returns a map with keys indicating various health statistics.
-func (s *service) Health() map[string]string {
+func (s *DBService) Health() map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	stats := make(map[string]string)
 
 	// Ping the database
-	err := s.db.PingContext(ctx)
+	err := s.DB.PingContext(ctx)
 	if err != nil {
 		stats["status"] = "down"
 		stats["error"] = fmt.Sprintf("db down: %v", err)
@@ -184,7 +235,7 @@ func (s *service) Health() map[string]string {
 	stats["message"] = "It's healthy"
 
 	// Get database stats (like open connections, in use, idle, etc.)
-	dbStats := s.db.Stats()
+	dbStats := s.DB.Stats()
 	stats["open_connections"] = strconv.Itoa(dbStats.OpenConnections)
 	stats["in_use"] = strconv.Itoa(dbStats.InUse)
 	stats["idle"] = strconv.Itoa(dbStats.Idle)
@@ -217,7 +268,7 @@ func (s *service) Health() map[string]string {
 // It logs a message indicating the disconnection from the specific database.
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
-func (s *service) Close() error {
-	log.Printf("Disconnecting from database: %s", dburl)
-	return s.db.Close()
+func (s *DBService) Close() error {
+	log.Printf("Disconnecting from database: %s", s.DbUrl)
+	return s.DB.Close()
 }
