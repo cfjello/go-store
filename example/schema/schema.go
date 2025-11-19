@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cfjello/go-store/internal/database"
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
@@ -15,15 +14,9 @@ import (
 
 func main() {
 	util.SetEnv() // Load default environment variables
-	// Initialize the SQLite database
-	dbService := database.New()
-	var err error
-	if dbService == nil {
-		log.Fatalf("Failed to initialize database")
-	}
-	defer dbService.Close()
-
-	DataStore := store.New(dbService)
+	log.Println("Connecting to SQLite database...")
+	reset := true // Set to true if you want to reset the database
+	DataStore := store.NewStore(reset)
 
 	log.Println("Successfully connected to SQLite database")
 
@@ -68,7 +61,7 @@ func main() {
 	counter := 0
 	log.Println("Starting to load schema.org schema...")
 	for _, graphItem := range doc {
-		graphItemMap, ok := graphItem.(map[string]interface{})
+		graphItemMap, ok := graphItem.(map[string]any)
 		if !ok {
 			log.Printf("Skipping non-map item in graph array")
 			continue
@@ -80,23 +73,46 @@ func main() {
 			log.Printf("Skipping item with non-string @id")
 			continue
 		}
+		// Remove "schema:" prefix if present
+		if len(id) > 7 && id[:7] == "schema:" {
+			id = id[7:]
+		}
 
 		// Create RegisterArgs and register the schema entry
-		setArgs := types.SetArgs{
+		regArgs := types.RegisterArgs{
 			Key:    id,
 			Object: graphItem,
+			Init:   true,
+			Check:  false,
 		}
-
-		_, err := DataStore.Set(setArgs)
+		_, err := DataStore.Register(regArgs)
 		if err != nil {
 			log.Printf("Error registering schema entry %s: %v", id, err)
-			continue
+			break
 		}
+
 		counter += 1
+		// Log progress every 100 items processed
 		if counter > 0 && counter%100 == 0 {
 			elapsed := time.Since(startTime).Milliseconds()
 			log.Printf("Processed %d items in %d ms", counter, elapsed)
+			//
+			// storeId := DataStore.Get()
+			res := DataStore.Persist(types.SetArgs{
+				Key:    regArgs.Key,
+				Object: regArgs.Object,
+				JobID:  "",
+				Check:  regArgs.Check,
+				Schema: regArgs.SchemaKey,
+			})
+			elapsed2 := time.Since(startTime).Milliseconds()
+			log.Printf("Persisted 1 item in %d ms", elapsed2-elapsed)
+			if !res {
+				log.Printf("Failed to persist schema entry %s", regArgs.Key)
+			}
+			// startTime = time.Now() // Reset timer for next batch
 		}
+
 	}
 	log.Println("Successfully loaded schema.org schema")
 }

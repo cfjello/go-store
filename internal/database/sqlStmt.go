@@ -2,111 +2,75 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 )
 
-type SqlStmt struct {
-	MetaInsert   string
-	MetaSelect   string
-	MetaSelInit  string
-	MetaUpdate   string
-	MetaUpdInit  string
-	DataInsert   string
-	DataSelect   string
-	DataIdByType string
-	DataSelLast  string
-	JobInsert    string
-	JobSelJob    string
-
-	db               *sql.DB
-	dataInsStmt      *sql.Stmt
-	dataSelStmt      *sql.Stmt
-	dataIdByTypeStmt *sql.Stmt
-	dataSelLastStmt  *sql.Stmt
-	metaInsStmt      *sql.Stmt
-	metaSelStmt      *sql.Stmt
-	// metaSelInitStmt  *sql.Stmt
-	metaUpdStmt *sql.Stmt
-	// metaUpdInitStmt  *sql.Stmt
-	jobInsStmt    *sql.Stmt
-	jobSelAllStmt *sql.Stmt
+var stmtMap = map[string]string{
+	"MetaInsert": "INSERT OR REPLACE INTO __meta__ (meta_key, schema_key, meta_data) VALUES (?, ?, ?)",
+	"MetaSelect": "SELECT meta_data FROM __meta__ WHERE meta_key = ? OR schema_key = ?",
+	// MetaSelInit: "SELECT init FROM __meta__ WHERE meta_key = ?",
+	// MetaSelLast:  "SELECT meta_data FROM __meta__ WHERE meta_key = ? ORDER BY rowid DESC LIMIT 1",
+	"MetaUpdate": "UPDATE __meta__ SET meta_data = ? WHERE meta_key = ?",
+	// MetaUpdInit:  "UPDATE meta SET init = ? WHERE meta_key = ?",
+	"DataInsert":   "INSERT INTO __data__ (data_id, job_id, meta_key, obj_data) VALUES (?, ?, ?, ? )",
+	"DataUpsert":   "INSERT INTO __data__ (data_id, job_id, meta_key, obj_data) VALUES (?, ?, ?, ?)",
+	"DataSelect":   "SELECT * FROM __data__ WHERE data_id = ?",
+	"DataIdByType": "SELECT data_id FROM __data__ WHERE meta_key = ? and job_id LIKE ?",
+	"DataSelLast":  "SELECT data_id FROM __data__ WHERE meta_key = ? ORDER BY data_id DESC LIMIT 1",
+	"JobInsert":    "INSERT INTO __job__ (job_id, data_id, job_data) VALUES (?, ?, ? )",
+	// "JobUpsert":    "INSERT INTO __job__ (job_id, data_id, job_data) VALUES (?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET data_id = excluded.data_id, job_data = excluded.job_data",
+	"JobSelJob": "SELECT * FROM __job__ WHERE job_id = ?",
+	"pJob": `INSERT OR REPLACE INTO @@job@@ (job_id, data_id, job_data) 
+						select job_id, data_id, job_data from main.job MJ where MJ.job_id = ?`,
+	"pJobMeta": `INSERT INTO @@meta@@ (meta_key, schema_key, meta_data) 
+						select meta_key, schema_key, meta_data from main.meta MM where MM.meta_key = ( 
+							select meta_key from main.data MD where MD.data_id IN ( 
+								select data_id from main.job MJ where MJ.job_id = ?
+							) 
+						) 
+					ON CONFLICT(meta_key) DO 
+						UPDATE SET schema_key = excluded.schema_key, 
+								   meta_data = excluded.meta_data`,
+	"pJobData": `INSERT OR REPLACE INTO @@data@@ (data_id, job_id, meta_key, obj_data) 
+						select data_id, job_id, meta_key, obj_data 
+						from main.data MD where MD.job_id = ?`,
 }
 
-func NewSqlStmt(db *sql.DB) (*SqlStmt, error) {
-	s := &SqlStmt{
-		MetaInsert: "INSERT INTO meta (meta_key, schema_key, meta_data) VALUES (?, ?, ?)",
-		MetaSelect: "SELECT meta_data FROM meta WHERE meta_key = ? OR schema_key = ?",
-		// MetaSelInit: "SELECT init FROM meta WHERE meta_key = ?",
-		// MetaSelLast:  "SELECT meta_data FROM meta WHERE meta_key = ? ORDER BY rowid DESC LIMIT 1",
-		MetaUpdate: "UPDATE meta SET meta_data = ? WHERE meta_key = ?",
-		// MetaUpdInit:  "UPDATE meta SET init = ? WHERE meta_key = ?",
-		DataInsert:   "INSERT INTO data (data_id, job_id, meta_key, obj_data) VALUES (?, ?, ?, ? )",
-		DataSelect:   "SELECT * FROM data WHERE data_id = ?",
-		DataIdByType: "SELECT data_id FROM data WHERE meta_key = ? and job_id LIKE ?",
-		DataSelLast:  "SELECT data_id FROM data WHERE meta_key = ? ORDER BY data_id DESC LIMIT 1",
-		JobInsert:    "INSERT INTO job (job_id, data_id, job_data) VALUES (?, ?, ? )",
-		JobSelJob:    "SELECT * FROM job WHERE job_id = ?",
-		// DB:           db,
-	}
+func PrepareStmts(db *sql.DB) (map[string]*sql.Stmt, error) {
 
-	var err error
+	PreparedStmts := map[string]*sql.Stmt{}
+	prefix := GetPrefix()
 
-	s.dataInsStmt, err = db.Prepare(s.DataInsert)
-	if err != nil {
-		return nil, err
-	}
-	s.dataSelStmt, err = db.Prepare(s.DataSelect)
-	if err != nil {
-		return nil, err
-	}
-	s.dataIdByTypeStmt, err = db.Prepare(s.DataIdByType)
-	if err != nil {
-		return nil, err
-	}
-	s.dataSelLastStmt, err = db.Prepare(s.DataSelLast)
-	if err != nil {
-		return nil, err
-	}
-	s.metaInsStmt, err = db.Prepare(s.MetaInsert)
-	if err != nil {
-		return nil, err
-	}
-	s.metaSelStmt, err = db.Prepare(s.MetaSelect)
-	if err != nil {
-		return nil, err
-	}
-
-	s.metaUpdStmt, err = db.Prepare(s.MetaUpdate)
-	if err != nil {
-		return nil, err
-	}
-
-	s.jobInsStmt, err = db.Prepare(s.JobInsert)
-	if err != nil {
-		return nil, err
-	}
-	s.jobSelAllStmt, err = db.Prepare(s.JobSelJob)
-	if err != nil {
-		return nil, err
-	}
-
-	return s, nil
-}
-
-func (s *SqlStmt) CheckTables() bool {
-	rows, err := s.db.Query("SELECT name FROM sqlite_master WHERE type='table';")
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-
-	tables := make(map[string]bool)
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return false
+	for name, query := range stmtMap {
+		memQuery := strings.Replace(strings.Replace(query, "__", "main.", 1), "__", "", 1)
+		persistOnly := strings.Contains(memQuery, "@@")
+		if !persistOnly {
+			memQuery = strings.Replace(memQuery, "@@", prefix, 1)
+			stmt, err := db.Prepare(memQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to prepare statement %s: %w", name, err)
+			}
+			PreparedStmts[name] = stmt
 		}
-		tables[name] = true
-	}
+		if prefix != "" && strings.Contains(query, "__") {
+			pName := "p" + name
+			persistQuery := strings.Replace(strings.Replace(query, "__", prefix+".", 1), "__", "", 1)
+			persistStmt, err := db.Prepare(persistQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to prepare statement %s: %w", pName, err)
+			}
+			PreparedStmts[pName] = persistStmt
+		}
 
-	return tables["data"] && tables["job"] && tables["meta"] && tables["job_graph"]
+		if persistOnly {
+			persistQuery := strings.Replace(strings.Replace(query, "@@", prefix+".", 1), "@@", "", 1)
+			persistStmt, err := db.Prepare(persistQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to prepare statement %s: %w", name, err)
+			}
+			PreparedStmts[name] = persistStmt
+		}
+	}
+	return PreparedStmts, nil
 }

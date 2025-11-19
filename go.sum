@@ -1,3 +1,7 @@
+github.com/cfjello/hierarkey-go v0.0.0-20250804073959-e77cb8ff98dc h1:KSzvSZ403sYhJWSGCrSArNzXCcnNF8SgeFjmllCgRq0=
+github.com/cfjello/hierarkey-go v0.0.0-20250804073959-e77cb8ff98dc/go.mod h1:fQcV2RlsNzQu/DoMemvdF9JuAVeoLbFGM9FIgFfDvVE=
+github.com/dominikbraun/graph v0.23.0 h1:TdZB4pPqCLFxYhdyMFb1TBdFxp8XLcJfTTBQucVPgCo=
+github.com/dominikbraun/graph v0.23.0/go.mod h1:yOjYyogZLY1LSG9E33JWZJiq5k83Qy2C6POAuiViluc=
 github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
 github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
 github.com/mattn/go-sqlite3 v1.14.28 h1:ThEiQrnbtumT+QMknw63Befp/ce/nUPgBPMlRFEum7A=

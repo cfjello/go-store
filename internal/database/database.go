@@ -17,110 +17,153 @@ import (
 )
 
 // StoreService represents a service that interacts with a database.
-
-/*
-type DBFunctions interface {
-	SetMeta(key string, meta types.MetaData) bool
-	GetMeta(key string, storeId string) (types.MetaData, error)
-	SetData(key string, data types.SetArgs) bool
-	GetData(key string) (any, error)
-	Close() error
-
-	// initDB() error
-	// createTables() error
-	// dropTables() error
-
-	// Health returns a map of health status information.
-	// The keys and values in the map are service-specific.
-	Health() map[string]string
-
-	// Close terminates the database connection.
-	// It returns an error if the connection cannot be closed.
-
-}
-*/
-
 type DBService struct {
-	DB    *sql.DB
-	SQL   *SqlStmt
-	DbUrl string
+	DB      *sql.DB
+	SQL     map[string]*sql.Stmt
+	DbUrl   string // URL of the attached file database
+	DbAlias string // Alias for the attached file database, if any
 }
 
 var dbInstance *DBService
 
-func New() *DBService {
+func New(reset bool) *DBService {
 	// Reuse Connection
 	if dbInstance != nil {
 		return dbInstance
 	}
 	util.SetEnv() // Load default environment variables
 
-	dbUrl := os.Getenv("SQLITE_DB_URL")
-	if dbUrl == "" {
-		// Default to a file-based SQLite database if not set
-		dbUrl = "file:F:/Sqlite3/go-store.db"
-	}
-	/*
-		dbFlags := os.Getenv("SQLITE_DB_FLAGS")
-		if dbFlags == "" {
-			// Default flags for SQLite database
-			dbFlags = ";PRAGMA journal_mode=OFF;"
-		}
-	*/
-	db, err := sql.Open("sqlite3", ":memory:")
+	// db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite3", ":memory:") // Open an in-memory SQLite database
 	if err != nil {
 		log.Fatalf("Failed to open in-memory database: %v", err)
 	}
 
-	dropErr := dropTables(db)
-	if dropErr != nil {
-		log.Fatal(dropErr)
+	fileDbPath := os.Getenv("SQLITE_DB_URL")
+	fileDbAlias := os.Getenv("FILE_DB_ALIAS")
+
+	dbInstance = &DBService{
+		DbUrl:   fileDbPath,
+		DB:      db,
+		SQL:     nil, // Will be populated by PrepareStmts
+		DbAlias: fileDbAlias,
 	}
-	// Create tables after dropping existing ones
-	dbErr := createTables(db)
-	if dbErr != nil {
-		log.Fatal(dbErr)
+
+	// Optionally attach a file database if specified in environment
+	if fileDbPath != "" {
+		if fileDbAlias == "" {
+			fileDbAlias = "persist" // Default alias if not set
+		}
+		err := dbInstance.AttachFileDB(fileDbPath, fileDbAlias)
+		if err != nil {
+			log.Fatalf("Error: Failed to attach file database: %v", err)
+		}
 	}
+	// Initialize the in-memory and optionally the file database schema
+	initDB(db, reset)
 
 	// Prepare SQL statements
-
-	sqlStmt, err := NewSqlStmt(db)
+	sqlStmts, err := PrepareStmts(db)
 	if err != nil {
 		log.Fatalf("Failed to prepare SQL statements: %v", err)
 	}
 
-	dbInstance = &DBService{
-		DbUrl: dbUrl,
-		DB:    db,
-		SQL:   sqlStmt,
-	}
+	dbInstance.SQL = sqlStmts
 
+	// defer dbInstance.Close() // Ensure the database is closed when the program exits
 	return dbInstance
 }
 
-func (s *DBService) SetData(key string, value types.SetArgs) bool {
+func (s *DBService) SetData(key string, args types.SetArgs) bool {
 	// Implementation for setting data in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ObjJSON, err := json.Marshal(value.Object)
+	ObjJSON, err := json.Marshal(args.Object)
 	if err != nil {
 		log.Printf("Failed to marshal object data for key: %s, error: %v", key, err)
 		return false
 	}
 
-	sqlRes, err := s.SQL.dataInsStmt.ExecContext(ctx, key, value.JobID, value.SchemaKey, ObjJSON)
+	// Persist to disk if requested
+	if args.Persist {
+		// If we have a file database attached, also insert into the persistent store
+		sqlRes2, err := s.SQL["pDataInsert"].ExecContext(ctx, key, args.JobID, args.Schema, ObjJSON)
+		if err != nil {
+			log.Printf("Failed to execute persistent statement for key: %s, error: %v", key, err)
+			return false
+		}
+		// Check if the execution was successful
+		rowsAffected, err := sqlRes2.RowsAffected()
+		if err != nil || rowsAffected != 1 {
+			log.Printf("Failed to set persistent data for key: %s, error: %v", key, err)
+			return false
+		}
+	} else {
+		sqlRes, err := s.SQL["DataInsert"].ExecContext(ctx, key, args.JobID, args.Schema, ObjJSON)
+		if err != nil {
+			log.Printf("Failed to execute statement for key: %s, error: %v", key, err)
+			return false
+		}
+		// Check if the execution was successful
+		rowsAffected, err := sqlRes.RowsAffected()
+		if err != nil || rowsAffected != 1 {
+			log.Printf("Failed to set data for key: %s, error: %v", key, err)
+			return false
+		}
+	}
+	return true
+}
+
+// UpsertData performs an INSERT or UPDATE operation (UPSERT)
+func (s *DBService) UpsertData(key string, args types.SetArgs) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ObjJSON, err := json.Marshal(args.Object)
 	if err != nil {
-		log.Printf("Failed to execute statement for key: %s, error: %v", key, err)
+		log.Printf("Failed to marshal object data for key: %s, error: %v", key, err)
+		return false
+	}
+
+	// Use the DataUpsert statement if available, otherwise fall back to DataInsert
+	var stmt *sql.Stmt
+	var ok bool
+	if stmt, ok = s.SQL["DataUpsert"]; !ok {
+		stmt = s.SQL["DataInsert"]
+	}
+
+	sqlRes, err := stmt.ExecContext(ctx, key, args.JobID, args.Schema, ObjJSON)
+	if err != nil {
+		log.Printf("Failed to execute upsert statement for key: %s, error: %v", key, err)
 		return false
 	}
 
 	rowsAffected, err := sqlRes.RowsAffected()
-	if err != nil || rowsAffected != 1 {
-		log.Printf("Failed to set data for key: %s, error: %v", key, err)
+	if err != nil || rowsAffected < 1 {
+		log.Printf("Failed to upsert data for key: %s, error: %v", key, err)
 		return false
 	}
-	// log.Printf("Data set for key: %s", key)
+
+	// Persist to disk if requested
+	if (args.Persist || s.DbUrl != "") && s.DbAlias != "" {
+		var pStmt *sql.Stmt
+		if pStmt, ok = s.SQL["pDataUpsert"]; !ok {
+			pStmt = s.SQL["pDataInsert"]
+		}
+
+		sqlRes2, err := pStmt.ExecContext(ctx, key, args.JobID, args.Schema, ObjJSON)
+		if err != nil {
+			log.Printf("Failed to execute persistent upsert statement for key: %s, error: %v", key, err)
+			return false
+		}
+
+		rowsAffected, err := sqlRes2.RowsAffected()
+		if err != nil || rowsAffected < 1 {
+			log.Printf("Failed to upsert persistent data for key: %s, error: %v", key, err)
+			return false
+		}
+	}
 	return true
 }
 
@@ -130,7 +173,7 @@ func (s *DBService) GetData(key string) (any, error) {
 
 	var data types.SetArgs
 	var dataJson []byte
-	err := s.SQL.dataSelStmt.QueryRowContext(ctx, key).Scan(&data.Key, &data.JobID, &data.SchemaKey, &dataJson)
+	err := s.SQL["DataSelect"].QueryRowContext(ctx, key).Scan(&data.Key, &data.JobID, &data.Schema, &dataJson)
 	if err != nil {
 		log.Printf("Failed to get data for key: %s, error: %v", key, err)
 		return nil, err
@@ -155,9 +198,46 @@ func (s *DBService) SetMeta(key string, value types.MetaData) bool {
 		log.Printf("Failed to marshal meta data for key: %s, error: %v", key, err)
 		return false
 	}
+
+	sqlRes, err := s.SQL["MetaInsert"].ExecContext(ctx, key, value.Schema, metaJSON)
+	if err != nil {
+		log.Printf("Failed to execute meta insert for key: %s, error: %v", key, err)
+		return false
+	}
+
+	rowsAffected, err := sqlRes.RowsAffected()
+	if err != nil || rowsAffected < 1 {
+		log.Printf("Failed to insert meta data for key: %s, error: %v", key, err)
+		return false
+	}
+
+	return true
+}
+
+// UpsertMeta performs an INSERT or UPDATE operation for metadata
+func (s *DBService) UpsertMeta(key string, value types.MetaData) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	metaJSON, err := json.Marshal(value)
+	if err != nil {
+		log.Printf("Failed to marshal meta data for key: %s, error: %v", key, err)
+		return false
+	}
+
 	meta := string(metaJSON)
-	s.SQL.metaInsStmt.ExecContext(ctx, key, meta)
-	// log.Printf("Meta data set for key: %s", key)
+	sqlRes, err := s.SQL["MetaInsert"].ExecContext(ctx, key, value.Schema, meta)
+	if err != nil {
+		log.Printf("Failed to execute meta upsert for key: %s, error: %v", key, err)
+		return false
+	}
+
+	rowsAffected, err := sqlRes.RowsAffected()
+	if err != nil || rowsAffected < 1 {
+		log.Printf("Failed to upsert meta data for key: %s, error: %v", key, err)
+		return false
+	}
+
 	return true
 }
 
@@ -170,7 +250,7 @@ func (s *DBService) GetMeta(key string, schemaKey string) (types.MetaData, error
 	if schemaKey == "" {
 		schemaKey = key
 	}
-	err := s.SQL.metaSelStmt.QueryRowContext(ctx, key, schemaKey).Scan(&metaJson)
+	err := s.SQL["MetaSelect"].QueryRowContext(ctx, key, schemaKey).Scan(&metaJson)
 	if err != nil {
 		// log.Printf("Failed to get meta data for key: %s, error: %v", key, err)
 		return types.MetaData{}, err
@@ -182,6 +262,41 @@ func (s *DBService) GetMeta(key string, schemaKey string) (types.MetaData, error
 		return types.MetaData{}, err
 	}
 	return meta, nil
+}
+
+// SetJobData sets job data for a given JobID
+func (s *DBService) PersistJob(JobID string) error {
+	// Implementation for setting job data in the database
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	defer cancel()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("Failed to begin transaction for JobID: %s, error: %v", JobID, err)
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = s.SQL["pJobData"].ExecContext(ctx, JobID)
+	if err != nil {
+		log.Printf("Failed to insert job data for JobID: %s, error: %v", JobID, err)
+		return nil
+	}
+	_, err = s.SQL["pJob"].ExecContext(ctx, JobID)
+	if err != nil {
+		log.Printf("Failed to persist job data for JobID: %s, error: %v", JobID, err)
+		return err
+	}
+
+	_, err = s.SQL["pJobMeta"].ExecContext(ctx, JobID)
+	if err != nil {
+		log.Printf("Failed to persist meta data for JobID: %s, error: %v", JobID, err)
+		return err
+	}
+	tx.Commit()
+	// log.Printf("Job data set for JobID: %s", JobID)
+
+	return nil
 }
 
 /*
@@ -205,7 +320,7 @@ func (s *DBService) GetCurrStoreID(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var storeID string
-	err := s.SQL.dataSelLastStmt.QueryRowContext(ctx, key).Scan(&storeID)
+	err := s.SQL["DataSelLast"].QueryRowContext(ctx, key).Scan(&storeID)
 	if err != nil {
 		log.Printf("failed to get current store ID for key: %s, error: %v", key, err)
 		return "", err
@@ -269,6 +384,52 @@ func (s *DBService) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *DBService) Close() error {
+	if s.DbUrl != "" {
+		s.DetachFileDB(s.DbAlias)
+	}
 	log.Printf("Disconnecting from database: %s", s.DbUrl)
 	return s.DB.Close()
+}
+
+// AttachFileDB attaches a file-based SQLite database to the current in-memory database
+func (s *DBService) AttachFileDB(filePath string, alias string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get the SQLite flags from environment variable
+	dbFlags := os.Getenv("SQLITE_DB_FLAGS")
+
+	// Construct the connection string with flags
+	var connectionString string
+	if dbFlags != "" {
+		connectionString = filePath + dbFlags
+	} else {
+		connectionString = filePath
+	}
+
+	query := fmt.Sprintf("ATTACH DATABASE '%s' AS %s", connectionString, alias)
+	_, err := s.DB.ExecContext(ctx, query)
+	if err != nil {
+		log.Printf("Failed to attach file database %s as %s: %v", connectionString, alias, err)
+		return err
+	}
+
+	log.Printf("Successfully attached file database %s as %s", connectionString, alias)
+	return nil
+}
+
+// DetachFileDB detaches a previously attached database
+func (s *DBService) DetachFileDB(alias string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf("DETACH DATABASE %s", alias)
+	_, err := s.DB.ExecContext(ctx, query)
+	if err != nil {
+		log.Printf("Failed to detach database %s: %v", alias, err)
+		return err
+	}
+
+	log.Printf("Successfully detached database %s", alias)
+	return nil
 }

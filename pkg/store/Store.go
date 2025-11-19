@@ -7,6 +7,8 @@ import (
 
 	"github.com/cfjello/go-store/internal/database"
 	"github.com/cfjello/go-store/pkg/dynReflect"
+
+	// "github.com/cfjello/go-store/pkg/job"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
 )
@@ -34,18 +36,33 @@ type Store struct {
 	InitStoreID string
 	SoftDel     string
 	db          *database.DBService
+	// job         *job.JobService
 }
 
+// var Store *StoreService
+
 // NewStore creates a new store
-func New(dbServ *database.DBService) *Store {
+func New(dbServ *database.DBService, reset bool) *Store {
+
+	if dbServ == nil {
+		dbServ = database.New(reset)
+		// defer dbServ.Close() // Ensure the database is closed when the program exits
+	}
+	if dbServ == nil {
+		panic("failed to initialize database service")
+	}
 	return &Store{
 		InitStoreID: "0000",
-		SoftDel:     util.Ulid(),
+		SoftDel:     "0000",
 		db:          dbServ,
+		// job:         job.NewJobService(),
 	}
 }
 
-/*
+func NewStore(reset bool) *Store {
+	return New(nil, reset)
+}
+
 // Register registers an object in the store
 func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 
@@ -56,13 +73,17 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 		return types.MetaData{}, fmt.Errorf("the combination of init=true and an undefined object is not valid")
 	}
 
+	reg := "reg"
+	if args.Init {
+		reg = "reg&set"
+	}
 	meta := types.MetaData{
-		Key:       args.Key,
-		Oper:      "reg",
-		Init:      args.Init,
-		SchemaKey: args.Key,
-		Check:     args.Check,
-		SoftDel:   s.SoftDel,
+		Key:     args.Key,
+		Oper:    reg,
+		Init:    args.Init,
+		Schema:  args.Key,
+		Check:   args.Check,
+		SoftDel: s.SoftDel,
 	}
 	if args.Init {
 		typeInfo := dynReflect.BuildTypeInfo(reflect.ValueOf(args.Object))
@@ -74,34 +95,70 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 	}
 	if meta.Init {
 		res := s.db.SetData(args.Key, types.SetArgs{
-			Key:       args.Key,
-			Object:    args.Object,
-			JobID:     "",
-			Check:     args.Check,
-			SchemaKey: meta.SchemaKey,
+			Key:    args.Key,
+			Object: args.Object,
+			JobID:  "",
+			Check:  args.Check,
+			Schema: meta.Schema,
 		})
 		if !res {
 			meta.Init = false
 			return meta, fmt.Errorf("unable to store object for key %s", args.Key)
 		}
-		meta.Oper = "reg&set"
-		s.SetMetaData(meta.Key, meta)
+
 		return meta, nil
 	}
 	return meta, nil
 }
-*/
+
 // IsRegistered checks if a key is registered
 func (s *Store) IsRegistered(key string) bool {
 	_, err := s.GetMetaData(key, key)
 	return err == nil
 }
 
+func (s *Store) SetDependsOn(MetaKey string, deps []string, replace bool) error {
+	if MetaKey == "" || !s.IsRegistered(MetaKey) {
+		return fmt.Errorf("key %s is not registered", MetaKey)
+	}
+
+	for _, dep := range deps {
+		if !s.IsRegistered(dep) {
+			return fmt.Errorf("dependency %s is not registered", dep)
+		}
+	}
+	meta, err := s.GetMetaData(MetaKey, MetaKey)
+	if err != nil {
+		return fmt.Errorf("failed to get metadata for key %s: %v", MetaKey, err)
+	}
+	if !replace {
+		dependsOn := util.UniqueStrings(append(meta.DependsOn, deps...))
+		meta.DependsOn = dependsOn
+	} else {
+		meta.DependsOn = deps
+	}
+	if !s.db.UpsertMeta(MetaKey, meta) {
+		return fmt.Errorf("failed to update metadata for key %s with dependencies %v", MetaKey, deps)
+	}
+	return nil
+}
+
+func (s *Store) GetDependsOn(MetaKey string) ([]string, error) {
+	if MetaKey == "" || !s.IsRegistered(MetaKey) {
+		return nil, fmt.Errorf("key %s is not registered", MetaKey)
+	}
+	meta, err := s.GetMetaData(MetaKey, MetaKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata for key %s: %v", MetaKey, err)
+	}
+	return meta.DependsOn, nil
+}
+
 // Set stores an object in the store
 func (s *Store) Set(args types.SetArgs) (types.MetaData, error) {
 
-	if args.Object == nil || reflect.ValueOf(args.Object).Kind() != reflect.Map {
-		return types.MetaData{}, errors.New("an object must be passed to the store")
+	if args.Object == nil && args.Key == "" {
+		return types.MetaData{}, errors.New("an named object must be passed to the store")
 	}
 
 	// Generate new storeId, jobId
@@ -109,42 +166,65 @@ func (s *Store) Set(args types.SetArgs) (types.MetaData, error) {
 	if args.JobID == "" {
 		args.JobID = storeID
 	}
-	if args.SchemaKey == "" {
-		args.SchemaKey = args.Key
+	if args.Schema == "" {
+		args.Schema = args.Key
 	}
 
 	var meta types.MetaData
 
-	meta, err := s.GetMetaData(args.Key, args.SchemaKey)
+	meta, err := s.GetMetaData(args.Key, args.Schema)
 	if err != nil {
-		// If the key is not registered, we create a new metadata object
-		meta = types.MetaData{
-			Key:  args.Key,
-			Init: true,
-			Oper: "set",
-			// StoreID:   storeID,
-			// JobID:     args.JobID,
-			Check:     args.Check,
-			SchemaKey: args.SchemaKey,
-			SoftDel:   s.SoftDel,
-			TypeInfo:  dynReflect.BuildTypeInfo(reflect.ValueOf(args.Object)),
-		}
-		// First, set the metadata
-		if !s.SetMetaData(meta.Key, meta) {
-			return types.MetaData{}, fmt.Errorf("failed to store metadata for %s", meta.Key)
-		}
-	} else {
-		// Validate the object if check is true
-		if meta.Check || args.Check {
-			// Validation would go here, but we'll skip  validation for now
-		}
+		return types.MetaData{}, fmt.Errorf("object %s is not registered: %v", args.Key, err)
+		/*
+			// If the key is not registered, we create a new metadata object
+			regArgs := types.RegisterArgs{
+				Key:       args.Key,
+				Object:    args.Object,
+				Init:      true,
+				Check:     args.Check,
+				SchemaKey: args.SchemaKey,
+			}
+			meta, err = s.Register(regArgs)
+			if err != nil {
+				return types.MetaData{}, fmt.Errorf("failed to register object %s: %v", args.Key, err)
+			}
+		*/
 	}
+	/*
+		// Validate the object if check is true-
+		if meta.Check || args.Check {
+			// If the type info is not set, we build it from the object
+			if reflect.DeepEqual(meta.TypeInfo, dynReflect.TypeInfo{}) {
+				meta.TypeInfo = dynReflect.BuildTypeInfo(reflect.ValueOf(args.Object))
+				meta.Oper = "set"
+				meta.Init = true
+				meta.Check = args.Check
+				meta.SoftDel = s.SoftDel
+				s.db.SetMeta(meta.Key, meta)
+			} else {
+				curObjTypes := dynReflect.BuildTypeInfo(reflect.ValueOf(args.Object))
+				if curObjTypes.Type != meta.TypeInfo.Type {
+					return types.MetaData{}, fmt.Errorf("object %s does not match the expected type: %s", args.Key, meta.TypeInfo.Type)
+				}
+			}
+		}
+	*/
 	// store the object data
+
 	if !s.db.SetData(args.Key, args) {
 		return types.MetaData{}, fmt.Errorf("failed to store data for %s", meta.Key)
 	}
-
 	return meta, nil
+}
+
+func (s *Store) Persist(args types.SetArgs) bool {
+	args.Persist = true
+	return s.db.SetData(args.Key, args)
+}
+
+func (s *Store) PersistJob(JobID string) error {
+	return s.db.PersistJob(JobID)
+
 }
 
 // Has is an alias for IsRegistered
@@ -173,10 +253,10 @@ func (s *Store) SetMetaData(key string, meta types.MetaData) bool {
 }
 
 // GetMetaData gets metadata for a key
-func (s *Store) GetMetaData(key string, schemaKey string) (types.MetaData, error) {
-	// var meta types.MetaData
-	if schemaKey == "" {
-		schemaKey = key
+func (s *Store) GetMetaData(key string, schemaKeys ...string) (types.MetaData, error) {
+	schemaKey := key
+	if len(schemaKeys) > 0 {
+		schemaKey = schemaKeys[0]
 	}
 	meta, err := s.db.GetMeta(key, schemaKey)
 	if err != nil {
@@ -188,23 +268,23 @@ func (s *Store) GetMetaData(key string, schemaKey string) (types.MetaData, error
 // Get gets an object from the store
 func (s *Store) Get(storeID string, key string) (interface{}, error) {
 	if key == "" && storeID == "" {
-		return *new(interface{}), errors.New("no \"key\" provided for Get()")
+		return *new(any), errors.New("no \"key\" provided for Get()")
 	}
 	// Here we lookup the latest storeID from metadata if not provided
 	if storeID == "" {
 		SID, err := s.db.GetCurrStoreID(key)
 		if err != nil {
-			return *new(interface{}), errors.New("no \"default storeId\" provided for Get()")
+			return *new(any), errors.New("no \"default storeId\" provided for Get()")
 		}
 		storeID = SID
 	}
 	if storeID == "" || storeID == "0000" {
-		return *new(interface{}), errors.New("no \"storeId\" provided for getData()")
+		return *new(any), errors.New("no \"storeId\" provided for getData()")
 	}
 
 	objData, err := s.db.GetData(storeID)
 	if err != nil {
-		return *new(interface{}), fmt.Errorf("failed to fetch data for %s with storeId: %s", key, storeID)
+		return *new(any), fmt.Errorf("failed to fetch data for %s with storeId: %s", key, storeID)
 	}
 	return objData, nil
 }
@@ -250,4 +330,17 @@ func (s *Store) SetJobIdx(adt ADT_Job) bool {
 	res := s.db.InsertJob(adt.JobID, adt.StoreID, string(adtJSON))
 	return res == 1
 }
+
+
+func YourFunction(firstParam SomeType, schemaKeys ...string) {
+	var schemaKey string
+	if len(schemaKeys) > 0 {
+		schemaKey = schemaKeys[0]
+	}
+	// Use schemaKey (will be empty string if not provided)
+}
+
+// Usage:
+YourFunction(firstParam)              // schemaKey will be ""
+YourFunction(firstParam, "mySchema")  // schemaKey will be "mySchema"
 */

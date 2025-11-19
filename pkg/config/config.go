@@ -62,17 +62,19 @@ func DefaultConfig() Config {
 			Port:      9999,
 			RunServer: true,
 		},
-		Sqlite3: Sqlite3{
-			Flags: ";PRAGMA journal_mode=WAL;",
-			File:  "F:/sqlite3/go-store.db",
-		},
+		// Sqlite3: Sqlite3{
+		// 	Flags: "?_journal_mode=WAL&_synchronous=normal&_journal_size_limit=6144000", &_synchronous=normal&_journal_size_limit=6144000
+		// 	File:  "F:/sqlite3/go-store.db",
+		// },
 		DefaultEnv: map[string]string{
-			"PORT":            "9090",
-			"APP_ENV":         "local",
-			"SQLITE_DB_URL":   "file:F:/Sqlite3/go-store.db",
-			"SQLITE_DB_FLAGS": ";PRAGMA journal_mode=WAL;",
-			"LOG_FILE_DEST":   "file:F:/Work/go-store/logs/go-store.log",
-			"CGO_ENABLED":     "1",
+			"PORT":               "9090",
+			"APP_ENV":            "local",
+			"SQLITE_DB_URL":      "file:G:/Sqlite3/go-store.db",
+			"SQLITE_DB_FLAGS":    "?_cache=shared&_journal_mode=WAL&_sync=normal&_mode=rwc",
+			"FILE_DB_ALIAS":      "persist",
+			"CGO_ENABLED":        "1",
+			"ENV_SOURCED":        "true",
+			"HIERARCHY_KEY_SIZE": "4",
 		},
 	}
 }

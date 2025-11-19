@@ -15,17 +15,19 @@ type MetaData struct {
 	// JobID    string              `json:"jobId"`
 	Check     bool                `json:"check"`
 	SoftDel   string              `json:"deleted,omitempty"`
-	SchemaKey string              `json:"schemaKey"`
+	Schema    string              `json:"schema"`
+	DependsOn []string            `json:"depends,omitempty"`
 	TypeInfo  dynReflect.TypeInfo `json:"typeInfo,omitempty"`
 }
 
 // SetArgs represents arguments for the set operation
 type SetArgs struct {
-	Key       string      `json:"key"`
-	Object    interface{} `json:"object"`
-	JobID     string      `json:"jobId,omitempty"`
-	Check     bool        `json:"check,omitempty"`
-	SchemaKey string      `json:"schemaKey,omitempty"`
+	Key     string      `json:"key"`
+	Object  interface{} `json:"object"`
+	JobID   string      `json:"jobId,omitempty"`
+	Check   bool        `json:"check,omitempty"`
+	Schema  string      `json:"schemaKey,omitempty"`
+	Persist bool        `json:"persist,omitempty"`
 }
 
 // RegisterArgs represents arguments for the register operation
