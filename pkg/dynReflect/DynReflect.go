@@ -2,7 +2,9 @@ package dynReflect
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"sort"
 )
 
 // TypeInfo represents type information of a value
@@ -23,6 +25,22 @@ func ObjectToTypeJSON(obj interface{}) (string, error) {
 		return "", err
 	}
 	return string(jsonData), nil
+}
+
+// JSONToObjectType inverts ObjectToTypeJSON: it parses type JSON and returns a new
+// zero-valued instance of the reconstructed (structurally equivalent) type. Named
+// types cannot be recovered from the JSON alone, so the result is always built from
+// anonymous struct/slice/map/pointer/etc. types matching the recorded structure.
+func JSONToObjectType(jsonData string) (interface{}, error) {
+	var info TypeInfo
+	if err := json.Unmarshal([]byte(jsonData), &info); err != nil {
+		return nil, fmt.Errorf("failed to parse type JSON: %w", err)
+	}
+	t, err := TypeInfoToType(info)
+	if err != nil {
+		return nil, fmt.Errorf("failed to rebuild type: %w", err)
+	}
+	return reflect.New(t).Elem().Interface(), nil
 }
 
 // BuildTypeInfo recursively builds type information for a value
@@ -131,5 +149,103 @@ func isComplexType(kind reflect.Kind) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// primitiveTypes maps a reflect.Kind's string form to a sample value of that kind's type.
+var primitiveTypes = map[string]reflect.Type{
+	"bool":       reflect.TypeOf(false),
+	"int":        reflect.TypeOf(int(0)),
+	"int8":       reflect.TypeOf(int8(0)),
+	"int16":      reflect.TypeOf(int16(0)),
+	"int32":      reflect.TypeOf(int32(0)),
+	"int64":      reflect.TypeOf(int64(0)),
+	"uint":       reflect.TypeOf(uint(0)),
+	"uint8":      reflect.TypeOf(uint8(0)),
+	"uint16":     reflect.TypeOf(uint16(0)),
+	"uint32":     reflect.TypeOf(uint32(0)),
+	"uint64":     reflect.TypeOf(uint64(0)),
+	"uintptr":    reflect.TypeOf(uintptr(0)),
+	"float32":    reflect.TypeOf(float32(0)),
+	"float64":    reflect.TypeOf(float64(0)),
+	"complex64":  reflect.TypeOf(complex64(0)),
+	"complex128": reflect.TypeOf(complex128(0)),
+	"string":     reflect.TypeOf(""),
+}
+
+// TypeInfoToType recursively rebuilds a reflect.Type from a TypeInfo, inverting BuildTypeInfo.
+func TypeInfoToType(info TypeInfo) (reflect.Type, error) {
+	if t, ok := primitiveTypes[info.Kind]; ok {
+		return t, nil
+	}
+
+	switch info.Kind {
+	case "struct":
+		names := make([]string, 0, len(info.Fields))
+		for name := range info.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names) // map iteration order isn't stable, so sort for a deterministic layout
+
+		fields := make([]reflect.StructField, 0, len(names))
+		for _, name := range names {
+			fieldType, err := TypeInfoToType(info.Fields[name])
+			if err != nil {
+				return nil, fmt.Errorf("field %q: %w", name, err)
+			}
+			fields = append(fields, reflect.StructField{Name: name, Type: fieldType})
+		}
+		return reflect.StructOf(fields), nil
+
+	case "map":
+		if info.KeyType == nil || info.ValueType == nil {
+			return nil, fmt.Errorf("map type info is missing key or value type")
+		}
+		keyType, err := TypeInfoToType(*info.KeyType)
+		if err != nil {
+			return nil, fmt.Errorf("map key: %w", err)
+		}
+		valueType, err := TypeInfoToType(*info.ValueType)
+		if err != nil {
+			return nil, fmt.Errorf("map value: %w", err)
+		}
+		return reflect.MapOf(keyType, valueType), nil
+
+	case "slice", "array":
+		if info.Elem == nil {
+			return nil, fmt.Errorf("%s type info is missing element type", info.Kind)
+		}
+		elemType, err := TypeInfoToType(*info.Elem)
+		if err != nil {
+			return nil, fmt.Errorf("element: %w", err)
+		}
+		// Array length isn't recorded in TypeInfo, so arrays are rebuilt as slices.
+		return reflect.SliceOf(elemType), nil
+
+	case "ptr":
+		if info.Elem == nil {
+			return nil, fmt.Errorf("pointer type info is missing element type")
+		}
+		elemType, err := TypeInfoToType(*info.Elem)
+		if err != nil {
+			return nil, fmt.Errorf("pointer element: %w", err)
+		}
+		return reflect.PtrTo(elemType), nil
+
+	case "interface":
+		return reflect.TypeOf((*interface{})(nil)).Elem(), nil
+
+	case "chan":
+		if info.Elem == nil {
+			return nil, fmt.Errorf("chan type info is missing element type")
+		}
+		elemType, err := TypeInfoToType(*info.Elem)
+		if err != nil {
+			return nil, fmt.Errorf("chan element: %w", err)
+		}
+		return reflect.ChanOf(reflect.BothDir, elemType), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported kind %q", info.Kind)
 	}
 }

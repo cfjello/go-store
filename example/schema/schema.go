@@ -16,7 +16,7 @@ func main() {
 	util.SetEnv() // Load default environment variables
 	log.Println("Connecting to SQLite database...")
 	reset := true // Set to true if you want to reset the database
-	DataStore := store.NewStore(reset)
+	DataStore := store.NewStoreService(reset)
 
 	log.Println("Successfully connected to SQLite database")
 
@@ -80,10 +80,11 @@ func main() {
 
 		// Create RegisterArgs and register the schema entry
 		regArgs := types.RegisterArgs{
-			Key:    id,
-			Object: graphItem,
-			Init:   true,
-			Check:  false,
+			Key:         id,
+			ObjectGroup: "jsonld",
+			DataObject:  graphItem,
+			Init:        true,
+			Check:       false,
 		}
 		_, err := DataStore.Register(regArgs)
 		if err != nil {
@@ -98,12 +99,12 @@ func main() {
 			log.Printf("Processed %d items in %d ms", counter, elapsed)
 			//
 			// storeId := DataStore.Get()
-			res := DataStore.Persist(types.SetArgs{
-				Key:    regArgs.Key,
-				Object: regArgs.Object,
-				JobID:  "",
-				Check:  regArgs.Check,
-				Schema: regArgs.SchemaKey,
+			res := DataStore.Publish(types.SetArgs{
+				Key:       regArgs.Key,
+				Object:    regArgs.Object.DataObject,
+				JobId:     "",
+				Check:     regArgs.Check,
+				ParentKey: regArgs.ParentKey,
 			})
 			elapsed2 := time.Since(startTime).Milliseconds()
 			log.Printf("Persisted 1 item in %d ms", elapsed2-elapsed)

@@ -4,6 +4,7 @@ package config
 type Config struct {
 	Nodes           NodeConfig      `json:"nodes"`
 	MonitorDefaults MonitorDefaults `json:"monitorDefaults"`
+	Names           NamesConfig     `json:"names"`
 	KvDatabase      KvDatabase      `json:"kvDatabase"`
 	Sqlite3         Sqlite3         `json:"sqlite3"`
 	// Logs            Logs            `json:"logs"`
@@ -19,6 +20,11 @@ type NodeConfig struct {
 	Approach     string `json:"approach"`
 	TimerMS      int    `json:"timerMS"`
 	SkipFirst    int    `json:"skipFirst"`
+}
+
+type NamesConfig struct {
+	DataName  string `json:"default"`
+	UpdMethod string `json:"updMethod"`
 }
 
 // MonitorDefaults represents monitor configuration settings
@@ -62,6 +68,10 @@ func DefaultConfig() Config {
 			Port:      9999,
 			RunServer: true,
 		},
+		Names: NamesConfig{
+			DataName:  "Data",
+			UpdMethod: "setData",
+		},
 		// Sqlite3: Sqlite3{
 		// 	Flags: "?_journal_mode=WAL&_synchronous=normal&_journal_size_limit=6144000", &_synchronous=normal&_journal_size_limit=6144000
 		// 	File:  "F:/sqlite3/go-store.db",
@@ -69,7 +79,7 @@ func DefaultConfig() Config {
 		DefaultEnv: map[string]string{
 			"PORT":               "9090",
 			"APP_ENV":            "local",
-			"SQLITE_DB_URL":      "file:G:/Sqlite3/go-store.db",
+			"SQLITE_DB_URL":      "file:F:/Sqlite3/go-store.db",
 			"SQLITE_DB_FLAGS":    "?_cache=shared&_journal_mode=WAL&_sync=normal&_mode=rwc",
 			"FILE_DB_ALIAS":      "persist",
 			"CGO_ENABLED":        "1",

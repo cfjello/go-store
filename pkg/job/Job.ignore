@@ -1,0 +1,195 @@
+package job
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/cfjello/go-store/pkg/store"
+	"github.com/cfjello/go-store/pkg/types"
+	"github.com/cfjello/go-store/pkg/util"
+	"github.com/cfjello/hierarkey-go/pkg/hierarkey"
+	"github.com/dominikbraun/graph"
+	_ "github.com/dominikbraun/graph"
+)
+
+type JobService struct {
+	JobGraph graph.Graph[string, types.JobVertex]
+	Store    *store.Store
+}
+
+var js *JobService
+
+func NewJobService(store *store.Store) *JobService {
+	g := graph.New(func(jv types.JobVertex) string { return jv.Key + "_" + jv.JobId }, graph.Directed(), graph.Acyclic())
+	if js != nil {
+		return js
+	} else {
+		js = &JobService{
+			JobGraph: g,
+			Store:    store,
+		}
+	}
+	return js
+}
+
+func (js *JobService) addJob(rootStoreId string, forceNew bool) (string, error) {
+	hk := hierarkey.NewHierarKey(1, 5)
+	jobId, err := js.BuildJobGraph(rootStoreId, 0, 4, hk)
+	if err != nil {
+		return "", fmt.Errorf("failed to build job graph: %v", err)
+	}
+	return jobId, nil
+}
+
+func (js *JobService) SetDependsOn(storeName string, deps []string, replace bool) error {
+	if storeName == "" || !js.Store.IsRegistered(storeName) {
+		return fmt.Errorf("key %s is not registered", storeName)
+	}
+
+	var meta types.MetaData
+	var err error
+	for _, dep := range deps {
+		if !js.Store.IsRegistered(dep) {
+			return fmt.Errorf("dependency %s is not registered", dep)
+		} else if dep == storeName {
+			return fmt.Errorf("object %s cannot depend on itself", dep)
+		}
+
+		meta, err = js.Store.GetMetaData(storeName, storeName)
+		if err != nil {
+			return fmt.Errorf("failed to get metadata for key %s: %v", storeName, err)
+		}
+	}
+	if !replace {
+		dependsOn := util.UniqueStrings(append(meta.DependsOn, deps...))
+		meta.DependsOn = dependsOn
+	} else {
+		meta.DependsOn = deps
+	}
+	if !js.Store.DB.UpsertMeta(storeName, meta) {
+		return fmt.Errorf("failed to update metadata for key %s with dependencies %v", storeName, deps)
+	}
+	return nil
+}
+
+func (js *JobService) GetDependsOn(storeName string) ([]string, error) {
+	// if storeName == "" || !js.Store.IsRegistered(storeName) {
+	// 	return nil, fmt.Errorf("key %s is not registered", storeName)
+	// }
+	meta, err := js.Store.GetMetaData(storeName, storeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata for key %s: %v", storeName, err)
+	}
+	return meta.DependsOn, nil
+}
+
+func (js *JobService) GetJobEntry(jobId string, currKey string) (JobVertex, error) {
+	return js.JobGraph.Vertex(jobId + "_" + currKey)
+}
+
+/*
+	func (js *JobService) GetDependencyGraph(storeId string, forceNew bool) error {
+		if storeId == "" || !js.Store.IsRegistered(storeId) {
+			return fmt.Errorf("key %s is not registered", storeId)
+		}
+		dfsMap , err := graph.DFSwithIdx (storeId)
+		if err != nil && !forceNew {
+			return graph.DFS(js.Graph, storeId, func(value string) bool {
+		} else {
+			adjMap, _ := js.Graph.AdjacencyMap()
+			return adjMap
+		}
+
+}
+*/
+func (js *JobService) GetCurrJobDef(metaName string) (types.JobDbEntry, error) {
+
+	meta, err := js.Store.GetMetaData(metaName)
+	if err != nil {
+		return types.JobDbEntry{}, fmt.Errorf("failed to get metadata for metaName %s: %v", metaName, err)
+	}
+	job, err := js.Store.DB.GetCurrJobDef(metaName, meta.Schema)
+	if err != nil {
+		return types.JobDbEntry{}, fmt.Errorf("failed to get current job definition for metaName %s: %v", metaName, err)
+	}
+	return job, nil
+
+}
+
+// Recursive function to build the job graph
+// It starts from the top node and traverses through all dependencies
+func (js *JobService) BuildJobGraph(currNodeName string, level int, keySize int, hk *hierarkey.HierarKey) (types.JobDbEntry, error) {
+	jobId := ""
+	// var currNode string = topNode
+	var currHKey string
+
+	// First check if the job already exists - select the newest one for the current currJob unless a specific jobId is provided
+	currJob, err := js.Store.DB.GetCurrJobEntry(currNodeName, "")
+
+	if err == nil {
+		return currJob, nil
+	}
+
+	// if not exists, create the job
+	if level == 0 {
+		jobId = util.Ulid()
+		keySize = 4
+		hk := hierarkey.NewHierarKey(1, keySize)
+		currHKey = hk.NextLeaf()
+	} else {
+		jobId = strings.SplitAfter(currNodeName, "_")[1]
+	}
+
+	vertex := types.JobVertex{
+		JobId:    jobId,
+		Key:      currHKey,
+		NodeName: currNodeName,
+		Level:    level,
+	}
+
+	vertexHash := vertex.Key + "_" + vertex.JobId
+	// Add the very first vertex
+	if level == 0 {
+		err := js.JobGraph.AddVertex(vertex)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	nodes, err := js.GetDependsOn(currNodeName)
+	if err != nil {
+		return "", err
+	}
+	for _, node := range nodes {
+		currChildKey := hk.NextLeaf()
+		childVertex := types.JobVertex{
+			JobId:    jobId,
+			Key:      currChildKey,
+			NodeName: node,
+			Level:    level + 1,
+		}
+		childHash := childVertex.Key + "_" + childVertex.JobId
+		if _, err := js.JobGraph.Vertex(childHash); err != nil {
+			err := js.JobGraph.AddVertex(childVertex)
+			if err != nil {
+				return "", err
+			}
+		}
+		if _, err := js.JobGraph.Edge(vertexHash, childHash); err != nil {
+			if err = js.JobGraph.AddEdge(vertexHash, childHash); err != nil {
+				return "", err
+			}
+		}
+		// Recursively add the job graph for the dependent node
+		if _, err = js.BuildJobGraph(childHash, level+1, keySize, hk); err != nil {
+			return "", err
+		}
+	}
+	return jobId, nil
+}
+
+/*
+func (js *JobService) GetAdjacencyMap() (map[string]map[string]graph.Edge[string], error) {
+	return js.Graph.AdjacencyMap()
+}
+*/

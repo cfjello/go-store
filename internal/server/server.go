@@ -27,7 +27,7 @@ func NewServer() *http.Server {
 	// Initialize the database service
 	NewServer := &Server{
 		port: port,
-		db:   database.New(),
+		db:   database.New(false),
 	}
 
 	// Declare Server config

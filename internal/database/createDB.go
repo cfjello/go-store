@@ -29,40 +29,52 @@ func initDB(db *sql.DB, reset bool) error {
 }
 
 var CreateStmtSql = struct {
-	Meta  string
+	Meta string
+	// Deps  string
 	Data  string
 	Graph string
 	Job   string
 }{
 	Meta: `
 		meta (
-			meta_key TEXT,
-			schema_key TEXT NOT NULL,
-			meta_data JSON NOT NULL,
+			meta_key  TEXT NOT NULL,
+			meta_parent_id TEXT,
+			meta_json JSON NOT NULL,
 			PRIMARY KEY(meta_key)
 		)`,
+	/*
+		Deps: `
+			deps (
+				deps_id  TEXT,
+				upper_meta_key TEXT NOT NULL,
+				lower_meta_key TEXT NOT NULL,
+				PRIMARY KEY(deps_id)
+		)`,
+	*/
 	Data: `
 		data (
 			data_id TEXT,
-			job_id TEXT NOT NULL,
-			obj_data JSON NOT NULL,
 			meta_key TEXT NOT NULL,
+			job_id TEXT,
+			data_json JSON NOT NULL,
 			PRIMARY KEY(data_id, job_id)
 		)`,
+
 	Graph: `
-		graph (
-			graph_id TEXT,
-			top_node TEXT NOT NULL,
-			graph_data JSON NOT NULL,
-			PRIMARY KEY(graph_id)
-		)`,
+			graph (
+				graph_id TEXT,
+				root_node TEXT NOT NULL,
+				graph_json JSON NOT NULL,
+				PRIMARY KEY(graph_id)
+			)`,
 	Job: `
-		job (
-			job_id TEXT NOT NULL,
-			data_id TEXT REFERENCES data(data_id),
-			job_data JSON NOT NULL,
-			PRIMARY KEY(job_id, data_id)
-		)`,
+			job (
+				job_id TEXT NOT NULL,
+				-- job_name TEXT,
+				meta_key TEXT REFERENCES data(meta_key),
+				job_json JSON NOT NULL,
+				PRIMARY KEY(job_id, meta_key)
+			)`,
 }
 
 func GetPrefix() string {
@@ -104,24 +116,37 @@ func createTables(db *sql.DB, reset bool) error {
 func CreateIndexes(db *sql.DB, reset bool) error {
 	prefix := GetPrefix()
 	// Create indexes for data table
-	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_data_job_id ON main.data(job_id)`)
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS main.idx_data_job_id ON data(job_id)`)
 	if err != nil {
 		return err
 	}
 	if reset {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_data_job_id ON ` + prefix + `.data(job_id)`)
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_data_job_id ON data(job_id)`)
 		if err != nil {
 			return err
 		}
 	}
 
-	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_data_meta_key ON main.data(meta_key)`)
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS main.idx_data_meta_key ON data(meta_key)`)
 	if err != nil {
 		return err
 	}
 
 	if reset {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_data_meta_key ON ` + prefix + `.data(meta_key)`)
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_data_meta_key ON data(meta_key)`)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Job Indexes
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS main.idx_job_meta_key ON job(meta_key)`)
+	if err != nil {
+		return err
+	}
+
+	if reset {
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_job_meta_key ON job(meta_key)`)
 		if err != nil {
 			return err
 		}

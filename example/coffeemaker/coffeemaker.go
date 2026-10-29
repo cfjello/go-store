@@ -107,14 +107,29 @@ func NewStoredCoffeeMaker(dataStore *store.Store, id, brand, model string) (*Sto
 		}
 	}
 
+	// Register the instance itself under the CoffeeMaker schema. Set requires
+	// the key to be registered, and storing data under the instance key makes
+	// it retrievable via Get("", id, &obj).
+	if !dataStore.IsRegistered(id) {
+		instArgs := types.RegisterArgs{
+			Key:       id,
+			Object:    coffeeMaker,
+			Init:      true,
+			Check:     true,
+			ParentKey: "CoffeeMaker",
+		}
+		if _, err := dataStore.Register(instArgs); err != nil {
+			return nil, fmt.Errorf("failed to register coffee maker %s: %w", id, err)
+		}
+	}
+
 	// Store the initial model
 	setArgs := types.SetArgs{
 		Key:     id,
 		Object:  coffeeMaker,
-		JobID:   util.Ulid(),
-		Check:   true,
-		Schema:  "CoffeeMaker",
-		Persist: true,
+		JobId:   util.Ulid(),
+		Check:   types.CheckOn,
+		Publish: true,
 	}
 
 	_, err := dataStore.Set(setArgs)
@@ -130,20 +145,15 @@ func NewStoredCoffeeMaker(dataStore *store.Store, id, brand, model string) (*Sto
 
 // Load existing coffee maker from store
 func LoadStoredCoffeeMaker(dataStore *store.Store, id string) (*StoredCoffeeMaker, error) {
-	obj, err := dataStore.Get("", id)
+	var model CoffeeMakerModel
+	_, err := dataStore.Get("", id, &model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load coffee maker %s: %w", id, err)
 	}
 
-	// Convert the stored object back to our model
-	model, ok := obj.(*CoffeeMakerModel)
-	if !ok {
-		return nil, fmt.Errorf("invalid coffee maker data type")
-	}
-
 	return &StoredCoffeeMaker{
 		dataStore: dataStore,
-		model:     model,
+		model:     &model,
 	}, nil
 }
 
@@ -154,10 +164,9 @@ func (cm *StoredCoffeeMaker) save() error {
 	setArgs := types.SetArgs{
 		Key:     cm.model.ID,
 		Object:  cm.model,
-		JobID:   util.Ulid(),
-		Check:   true,
-		Schema:  "CoffeeMaker",
-		Persist: true,
+		JobId:   util.Ulid(),
+		Check:   types.CheckOn,
+		Publish: true,
 	}
 
 	_, err := cm.dataStore.Set(setArgs)
@@ -422,7 +431,7 @@ func registerCoffeeMakerSchema(dataStore *store.Store) error {
 		Object:    coffeeMakerSchema,
 		Init:      true,
 		Check:     true,
-		SchemaKey: "CoffeeMaker",
+		ParentKey: "CoffeeMaker",
 	}
 
 	_, err := dataStore.Register(regArgs)
@@ -488,7 +497,7 @@ func main() {
 	util.SetEnv() // Load default environment variables
 
 	fmt.Println("Initializing store...")
-	dataStore := store.NewStore(true) // reset = true
+	dataStore := store.NewStoreService(true) // reset = true
 
 	fmt.Println("Running coffee maker demonstration...")
 	if err := DemonstrateCoffeeMaker(dataStore); err != nil {
