@@ -69,8 +69,8 @@ func DefaultConfig() Config {
 			RunServer: true,
 		},
 		Names: NamesConfig{
-			DataName:  "Data",
-			UpdMethod: "setData",
+			DataName:  "data",
+			UpdMethod: "SetData",
 		},
 		// Sqlite3: Sqlite3{
 		// 	Flags: "?_journal_mode=WAL&_synchronous=normal&_journal_size_limit=6144000", &_synchronous=normal&_journal_size_limit=6144000

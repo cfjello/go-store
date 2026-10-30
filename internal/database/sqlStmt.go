@@ -78,7 +78,37 @@ func PrepareStmts(db *sql.DB) (map[string]*sql.Stmt, error) {
 var (
 	memTokenRe     = regexp.MustCompile(`__(\w+)__`)
 	persistTokenRe = regexp.MustCompile(`@@(\w+)@@`)
+	schemaIdentRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
+
+// dataPageSQL is the keyset page used by version iterators. schema must be a
+// bare identifier. desc pages with data_id < afterID; otherwise data_id >.
+// excludeMain drops ids already present in main.data so a published row, which
+// is copied into the file database under the same data_id, is returned once.
+func dataPageSQL(schema string, desc, excludeMain bool) (string, error) {
+	if !schemaIdentRe.MatchString(schema) {
+		return "", fmt.Errorf("invalid schema %q", schema)
+	}
+	cmp := ">"
+	order := "ASC"
+	if desc {
+		cmp = "<"
+		order = "DESC"
+	}
+	exclude := ""
+	if excludeMain {
+		exclude = " AND data_id NOT IN (SELECT data_id FROM main.data WHERE meta_key = ?)"
+	}
+	query := fmt.Sprintf(`SELECT data_id, meta_key, job_id, data_json
+FROM %s.data
+WHERE meta_key = ?
+  AND (? = '' OR job_id = ?)
+  AND (? = '' OR data_id %s ?)
+  %s
+ORDER BY data_id %s, job_id %s
+LIMIT ?`, schema, cmp, exclude, order, order)
+	return query, nil
+}
 
 // expandTokens replaces all table tokens in a query:
 // __name__ becomes memSchema.name and @@name@@ becomes persistSchema.name.

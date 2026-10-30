@@ -1,8 +1,10 @@
 package job
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/cfjello/go-store/pkg/store"
@@ -260,7 +262,7 @@ func (js *JobService) RunGraph(rootKey string) (types.RunGraph, error) {
 	// Register the run graph under rootKey+"_job" if not already registered.
 	jKey := jobKey(rootKey)
 	if !js.Store.IsRegistered(jKey) {
-		if _, err := js.Store.Register(types.RegisterArgs{Key: jKey}); err != nil {
+		if _, err := js.Store.Register(types.RegisterArgs{Key: jKey, Object: &runGraph}); err != nil {
 			return types.RunGraph{}, fmt.Errorf("failed to register job graph %q: %v", jKey, err)
 		}
 	}
@@ -280,10 +282,16 @@ func (js *JobService) RunGraph(rootKey string) (types.RunGraph, error) {
 	return runGraph, nil
 }
 
-// ExecRunGraph is re-entrant and thread-safe: it operates only on a local copy
-// of the newest stored run graph and does not mutate shared service state. It
-// loads the run graph registered under key+"_job" and marks each node IsDirty
-// according to its dependencies' store IDs and AlwaysRun flag.
+// ExecRunGraph loads the newest run graph stored under key+"_job" and refreshes
+// each node's store ID. A node is dirty when that store ID is missing, when the
+// node is Fixed, or when isDirty reports that dependencies or AlwaysRun
+// require a re-run. A dirty node is updated by calling the no-argument method
+// named by the store's updMethod on the object cached under that node's key.
+// Calls at the same node.Level run concurrently. Walking up a branch (the level
+// decreases) waits for every deeper in-flight call. A level increase is another
+// branch: it does not wait for the shallower branch already running, and
+// prevLevel moves to the new branch. The first call (prevLevel == -1) does not
+// wait. A failed lookup or call stops later launches and is returned.
 func (js *JobService) ExecRunGraph(key string) (types.RunGraph, error) {
 	if key == "" {
 		return types.RunGraph{}, errors.New("the key cannot be empty")
@@ -302,17 +310,135 @@ func (js *JobService) ExecRunGraph(key string) (types.RunGraph, error) {
 		return types.RunGraph{}, fmt.Errorf("failed to load job graph %q: %v", jKey, err)
 	}
 
+	// prevLevel is the level of the previous node. -1 means the walk has not
+	// started, so the first call does not wait. Each level keeps its own
+	// in-flight batch so a new branch does not join a shallower one.
+	prevLevel := -1
+	method := js.Store.UpdMethod()
+	type levelBatch struct {
+		wg  sync.WaitGroup
+		mu  sync.Mutex
+		err error
+	}
+	batches := make(map[int]*levelBatch)
+	// waitDeeperThan joins every in-flight batch deeper than level (Promise.all
+	// for those batches only) and removes them.
+	waitDeeperThan := func(level int) error {
+		var errs []error
+		for l, batch := range batches {
+			if l <= level {
+				continue
+			}
+			batch.wg.Wait()
+			if batch.err != nil {
+				errs = append(errs, batch.err)
+			}
+			delete(batches, l)
+		}
+		return errors.Join(errs...)
+	}
+	abort := func(err error) (types.RunGraph, error) {
+		if rest := waitDeeperThan(-1); rest != nil {
+			err = errors.Join(err, rest)
+		}
+		return types.RunGraph{}, err
+	}
+
 	// Refresh each node's current store ID and compute IsDirty.
 	for _, nodeKey := range runGraph.Order {
 		node := runGraph.Nodes[nodeKey]
 		if node == nil {
 			continue
 		}
-		currStoreID, _ := js.Store.GetCurrStoreID(nodeKey)
-		node.StoreId = currStoreID
-		node.IsDirty = js.isDirty(node, runGraph)
+		if prevLevel != -1 && node.Level != prevLevel {
+			// Level decrease: moving up this branch, so deeper calls must finish.
+			// Level increase: another branch. Join only calls deeper than the new
+			// branch and leave the previous, shallower branch running.
+			if err := waitDeeperThan(node.Level); err != nil {
+				return abort(err)
+			}
+		}
+		prevLevel = node.Level
+
+		currStoreID, err := js.Store.GetCurrStoreID(nodeKey)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return abort(fmt.Errorf("failed to get current store ID for %q: %v", nodeKey, err))
+			}
+			// No stored version for this node. It must run; skip isDirty.
+			node.StoreId = ""
+			node.IsDirty = true
+		} else {
+			node.StoreId = currStoreID
+			if node.Fixed {
+				// Fixed nodes are not re-run. Skip isDirty.
+				node.IsDirty = false
+			} else {
+				node.IsDirty = js.isDirty(node, runGraph)
+			}
+		}
+		if !node.IsDirty {
+			continue
+		}
+		obj, ok := js.Store.GetCache(nodeKey)
+		if !ok || obj == nil {
+			return abort(fmt.Errorf("no cached object for dirty node %q", nodeKey))
+		}
+		batch := batches[node.Level]
+		if batch == nil {
+			batch = &levelBatch{}
+			batches[node.Level] = batch
+		}
+		batch.wg.Add(1)
+		go func(batch *levelBatch, obj any, nodeKey string) {
+			defer batch.wg.Done()
+			if err := callNoArgMethod(obj, method); err != nil {
+				batch.mu.Lock()
+				if batch.err == nil {
+					batch.err = fmt.Errorf("failed to call %s on dirty node %q: %v", method, nodeKey, err)
+				}
+				batch.mu.Unlock()
+			}
+		}(batch, obj, nodeKey)
+	}
+	if err := waitDeeperThan(-1); err != nil {
+		return types.RunGraph{}, err
 	}
 	return runGraph, nil
+}
+
+// callNoArgMethod invokes the exported method name on obj with no arguments.
+// A missing method, a method that requires arguments, a panic, or a non-nil
+// error result is a failed call.
+func callNoArgMethod(obj any, name string) (err error) {
+	if name == "" {
+		return errors.New("update method name is empty")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%s panicked: %v", name, r)
+		}
+	}()
+
+	method := reflect.ValueOf(obj).MethodByName(name)
+	if !method.IsValid() {
+		return fmt.Errorf("method %s not found on %T", name, obj)
+	}
+	if method.Type().NumIn() != 0 {
+		return fmt.Errorf("method %s on %T requires %d arguments", name, obj, method.Type().NumIn())
+	}
+	for _, result := range method.Call(nil) {
+		if result.Kind() == reflect.Interface && result.IsNil() {
+			continue
+		}
+		if !result.CanInterface() {
+			continue
+		}
+		if callErr, ok := result.Interface().(error); ok && callErr != nil {
+			return callErr
+		}
+	}
+	return nil
 }
 
 // isDirty reports whether a node must re-run. A leaf is dirty when it is older

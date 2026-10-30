@@ -1,295 +1,393 @@
 package job
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
+	"github.com/cfjello/go-store/pkg/util"
 )
 
-// newTestJobService creates a JobService backed by a fresh in-memory store.
-func newTestJobService(t *testing.T) *JobService {
-	t.Helper()
-	s := store.NewStoreService(true) // reset = true
-	if s == nil {
-		t.Fatalf("failed to create store service")
-	}
-	return NewJobService(s)
+type setDataObj struct {
+	calls int
+	err   error
 }
 
-// registerKeys registers the given keys without dependencies.
-func registerKeys(t *testing.T, s *store.Store, keys ...string) {
+func (o *setDataObj) SetData() error {
+	o.calls++
+	return o.err
+}
+
+func (o *setDataObj) WithArg(n int) {}
+
+func TestCallNoArgMethod(t *testing.T) {
+	okObj := &setDataObj{}
+	if err := callNoArgMethod(okObj, "SetData"); err != nil {
+		t.Fatalf("SetData: %v", err)
+	}
+	if okObj.calls != 1 {
+		t.Fatalf("SetData calls = %d, want 1", okObj.calls)
+	}
+
+	failObj := &setDataObj{err: errors.New("update failed")}
+	if err := callNoArgMethod(failObj, "SetData"); err == nil || err.Error() != "update failed" {
+		t.Fatalf("SetData error = %v, want update failed", err)
+	}
+
+	if err := callNoArgMethod(okObj, "Missing"); err == nil {
+		t.Fatal("expected missing method to fail")
+	}
+	if err := callNoArgMethod(okObj, "WithArg"); err == nil {
+		t.Fatal("expected a method that requires arguments to fail")
+	}
+}
+
+func TestExecRunGraphCallsUpdMethodAndStopsOnError(t *testing.T) {
+	s := store.New(nil, true)
+	js := &JobService{Store: s}
+	if js.Store.UpdMethod() != "SetData" {
+		t.Fatalf("updMethod = %q, want SetData", js.Store.UpdMethod())
+	}
+
+	leaf := &setDataObj{}
+	root := &setDataObj{}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "upd-leaf", Object: leaf, AlwaysRun: true}); err != nil {
+		t.Fatalf("register leaf: %v", err)
+	}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "upd-root", Object: root}); err != nil {
+		t.Fatalf("register root: %v", err)
+	}
+	if err := js.Store.SetDeps("upd-root", []string{"upd-leaf"}); err != nil {
+		t.Fatalf("SetDeps: %v", err)
+	}
+	if _, err := js.RunGraph("upd-root"); err != nil {
+		t.Fatalf("RunGraph: %v", err)
+	}
+
+	rg, err := js.ExecRunGraph("upd-root")
+	if err != nil {
+		t.Fatalf("ExecRunGraph: %v", err)
+	}
+	if !rg.Nodes["upd-leaf"].IsDirty || !rg.Nodes["upd-root"].IsDirty {
+		t.Fatal("expected nodes with no store ID to be dirty")
+	}
+	if leaf.calls != 1 || root.calls != 1 {
+		t.Fatalf("SetData calls leaf=%d root=%d, want 1 and 1", leaf.calls, root.calls)
+	}
+
+	leaf.err = errors.New("leaf update failed")
+	next := &setDataObj{}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "upd-next", Object: next, AlwaysRun: true}); err != nil {
+		t.Fatalf("register next: %v", err)
+	}
+	if err := js.Store.SetDeps("upd-next", []string{"upd-leaf"}); err != nil {
+		t.Fatalf("SetDeps next: %v", err)
+	}
+	if _, err := js.RunGraph("upd-next"); err != nil {
+		t.Fatalf("RunGraph next: %v", err)
+	}
+	if _, err := js.ExecRunGraph("upd-next"); err == nil {
+		t.Fatal("expected ExecRunGraph to stop when the update method fails")
+	}
+	if next.calls != 0 {
+		t.Fatalf("later dirty node was called after a failure: calls = %d", next.calls)
+	}
+}
+
+func TestExecRunGraphStoreIDRules(t *testing.T) {
+	s := store.New(nil, true)
+	js := &JobService{Store: s}
+
+	missing := &setDataObj{}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "id-missing", Object: missing}); err != nil {
+		t.Fatalf("register missing: %v", err)
+	}
+	if _, err := js.RunGraph("id-missing"); err != nil {
+		t.Fatalf("RunGraph missing: %v", err)
+	}
+	rg, err := js.ExecRunGraph("id-missing")
+	if err != nil {
+		t.Fatalf("ExecRunGraph missing: %v", err)
+	}
+	if !rg.Nodes["id-missing"].IsDirty || missing.calls != 1 {
+		t.Fatalf("missing store ID: dirty=%v calls=%d", rg.Nodes["id-missing"].IsDirty, missing.calls)
+	}
+
+	stable := &setDataObj{}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "id-stable", Object: stable}); err != nil {
+		t.Fatalf("register stable: %v", err)
+	}
+	if _, err := js.Store.Set(types.SetArgs{Key: "id-stable", Object: stable}); err != nil {
+		t.Fatalf("set stable: %v", err)
+	}
+	if _, err := js.RunGraph("id-stable"); err != nil {
+		t.Fatalf("RunGraph stable: %v", err)
+	}
+	rg, err = js.ExecRunGraph("id-stable")
+	if err != nil {
+		t.Fatalf("ExecRunGraph stable: %v", err)
+	}
+	if rg.Nodes["id-stable"].IsDirty || stable.calls != 0 {
+		t.Fatalf("stable node: dirty=%v calls=%d", rg.Nodes["id-stable"].IsDirty, stable.calls)
+	}
+
+	fixed := &setDataObj{}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "id-fixed", Object: fixed}); err != nil {
+		t.Fatalf("register fixed: %v", err)
+	}
+	if _, err := js.Store.Set(types.SetArgs{Key: "id-fixed", Object: fixed}); err != nil {
+		t.Fatalf("set fixed: %v", err)
+	}
+	if _, err := js.RunGraph("id-fixed"); err != nil {
+		t.Fatalf("RunGraph fixed: %v", err)
+	}
+	// Stamp Fixed on the stored node. RunGraph omits Fixed vertices from the
+	// order, so the flag is set on the published snapshot instead.
+	jKey := "id-fixed_job"
+	graphID, err := js.Store.GetCurrStoreID(jKey)
+	if err != nil {
+		t.Fatalf("job store ID: %v", err)
+	}
+	var stored types.RunGraph
+	if _, err := js.Store.DB.GetData(graphID, &stored); err != nil {
+		t.Fatalf("load job graph: %v", err)
+	}
+	stored.Nodes["id-fixed"].Fixed = true
+	jobID := util.Ulid()
+	if ok := js.Store.DB.UpsertData(jKey, types.SetArgs{
+		Key:     jKey,
+		StoreId: jobID,
+		JobId:   jobID,
+		Object:  stored,
+	}); !ok {
+		t.Fatal("failed to publish fixed node snapshot")
+	}
+	rg, err = js.ExecRunGraph("id-fixed")
+	if err != nil {
+		t.Fatalf("ExecRunGraph fixed: %v", err)
+	}
+	if rg.Nodes["id-fixed"].IsDirty || fixed.calls != 0 {
+		t.Fatalf("fixed node: dirty=%v calls=%d, want clean and uncalled", rg.Nodes["id-fixed"].IsDirty, fixed.calls)
+	}
+}
+
+// levelObj blocks inside SetData so a test can observe same-level overlap and
+// the barrier before the next level starts.
+type levelObj struct {
+	started chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (o *levelObj) SetData() error {
+	close(o.started)
+	<-o.release
+	return o.err
+}
+
+func waitStarted(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	for _, key := range keys {
-		if _, err := s.Register(types.RegisterArgs{Key: key}); err != nil {
-			t.Fatalf("failed to register key %q: %v", key, err)
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s to start", what)
+	}
+}
+
+func TestExecRunGraphLevelParallelism(t *testing.T) {
+	s := store.New(nil, true)
+	js := &JobService{Store: s}
+
+	leafRelease := make(chan struct{})
+	leafA := &levelObj{started: make(chan struct{}), release: leafRelease}
+	leafB := &levelObj{started: make(chan struct{}), release: leafRelease}
+	mid := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	root := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	for key, obj := range map[string]*levelObj{
+		"lvl-a": leafA, "lvl-b": leafB, "lvl-mid": mid, "lvl-root": root,
+	} {
+		if _, err := js.Store.Register(types.RegisterArgs{Key: key, Object: obj}); err != nil {
+			t.Fatalf("register %s: %v", key, err)
 		}
 	}
-}
-
-func TestDepsGraphLinear(t *testing.T) {
-	js := newTestJobService(t)
-	registerKeys(t, js.Store, "A", "B", "C")
-
-	// A -> B -> C
-	if err := js.Store.SetDeps("A", []string{"B"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
+	if err := js.Store.SetDeps("lvl-mid", []string{"lvl-a", "lvl-b"}); err != nil {
+		t.Fatalf("SetDeps mid: %v", err)
 	}
-	if err := js.Store.SetDeps("B", []string{"C"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
+	if err := js.Store.SetDeps("lvl-root", []string{"lvl-mid"}); err != nil {
+		t.Fatalf("SetDeps root: %v", err)
+	}
+	if _, err := js.RunGraph("lvl-root"); err != nil {
+		t.Fatalf("RunGraph: %v", err)
 	}
 
-	g, err := js.DepsGraph("A")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := js.ExecRunGraph("lvl-root")
+		done <- err
+	}()
 
-	adj, err := g.AdjacencyMap()
-	if err != nil {
-		t.Fatalf("AdjacencyMap failed: %v", err)
+	// Leaves share a level and must both be in SetData before either is released.
+	waitStarted(t, leafA.started, "lvl-a")
+	waitStarted(t, leafB.started, "lvl-b")
+	select {
+	case <-mid.started:
+		t.Fatal("next level started before the previous level finished")
+	default:
 	}
-	if len(adj) != 3 {
-		t.Errorf("expected 3 vertices, got %d", len(adj))
-	}
+	close(leafRelease)
 
-	order, err := js.ExecutionOrder(g)
-	if err != nil {
-		t.Fatalf("ExecutionOrder failed: %v", err)
+	waitStarted(t, mid.started, "lvl-mid")
+	select {
+	case <-root.started:
+		t.Fatal("root started before lvl-mid finished")
+	default:
 	}
-	// Edges point to dependencies, so the order is root first: A, B, C.
-	assertBefore(t, order, "A", "B")
-	assertBefore(t, order, "B", "C")
-}
+	close(mid.release)
+	waitStarted(t, root.started, "lvl-root")
+	close(root.release)
 
-func TestDepsGraphDiamond(t *testing.T) {
-	js := newTestJobService(t)
-	registerKeys(t, js.Store, "A", "B", "C", "D")
-
-	// A -> B, A -> C, B -> D, C -> D (diamond, shared subtree at D)
-	if err := js.Store.SetDeps("A", []string{"B", "C"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
-	}
-	if err := js.Store.SetDeps("B", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
-	}
-	if err := js.Store.SetDeps("C", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps C: %v", err)
-	}
-
-	g, err := js.DepsGraph("A")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
-
-	adj, err := g.AdjacencyMap()
-	if err != nil {
-		t.Fatalf("AdjacencyMap failed: %v", err)
-	}
-	if len(adj) != 4 {
-		t.Errorf("expected 4 vertices, got %d", len(adj))
-	}
-
-	order, err := js.ExecutionOrder(g)
-	if err != nil {
-		t.Fatalf("ExecutionOrder failed: %v", err)
-	}
-	// Root first, deepest dependency (D) last.
-	assertBefore(t, order, "A", "B")
-	assertBefore(t, order, "A", "C")
-	assertBefore(t, order, "B", "D")
-	assertBefore(t, order, "C", "D")
-}
-
-func TestDepsGraphCycle(t *testing.T) {
-	js := newTestJobService(t)
-	registerKeys(t, js.Store, "A", "B")
-
-	// A -> B -> A forms a cycle; the Acyclic trait must reject it.
-	if err := js.Store.SetDeps("A", []string{"B"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
-	}
-	if err := js.Store.SetDeps("B", []string{"A"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
-	}
-
-	if _, err := js.DepsGraph("A"); err == nil {
-		t.Errorf("expected an error for cyclic dependencies, got nil")
-	}
-}
-
-func TestDepsGraphVertexFixed(t *testing.T) {
-	js := newTestJobService(t)
-
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "F", Fixed: true}); err != nil {
-		t.Fatalf("failed to register key F: %v", err)
-	}
-	registerKeys(t, js.Store, "G")
-	if err := js.Store.SetDeps("F", []string{"G"}); err != nil {
-		t.Fatalf("SetDeps F: %v", err)
-	}
-
-	g, err := js.DepsGraph("F")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
-
-	adj, err := g.AdjacencyMap()
-	if err != nil {
-		t.Fatalf("AdjacencyMap failed: %v", err)
-	}
-	found := make(map[string]bool)
-	for hash := range adj {
-		v, err := g.Vertex(hash)
+	select {
+	case err := <-done:
 		if err != nil {
-			t.Fatalf("failed to get vertex %q: %v", hash, err)
+			t.Fatalf("ExecRunGraph: %v", err)
 		}
-		switch v.Key {
-		case "F":
-			if !v.Fixed {
-				t.Errorf("expected vertex F to have Fixed=true")
-			}
-		case "G":
-			if v.Fixed {
-				t.Errorf("expected vertex G to have Fixed=false")
-			}
-		}
-		found[v.Key] = true
-	}
-	if !found["F"] || !found["G"] {
-		t.Errorf("expected vertices F and G in graph, got %v", found)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for ExecRunGraph")
 	}
 }
 
-func TestExecutionOrderSkipsFixed(t *testing.T) {
-	js := newTestJobService(t)
+func TestExecRunGraphLevelErrorStopsNextLevel(t *testing.T) {
+	s := store.New(nil, true)
+	js := &JobService{Store: s}
 
-	// A -> B (fixed) -> D, and A -> C -> D.
-	// B and its child D must be skipped; A and C remain.
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Fixed: true}); err != nil {
-		t.Fatalf("failed to register key B: %v", err)
+	leafRelease := make(chan struct{})
+	leaf := &levelObj{started: make(chan struct{}), release: leafRelease, err: errors.New("leaf failed")}
+	root := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "err-leaf", Object: leaf}); err != nil {
+		t.Fatalf("register leaf: %v", err)
 	}
-	registerKeys(t, js.Store, "A", "C", "D")
-
-	if err := js.Store.SetDeps("A", []string{"B", "C"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "err-root", Object: root}); err != nil {
+		t.Fatalf("register root: %v", err)
 	}
-	if err := js.Store.SetDeps("B", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
+	if err := js.Store.SetDeps("err-root", []string{"err-leaf"}); err != nil {
+		t.Fatalf("SetDeps: %v", err)
 	}
-	if err := js.Store.SetDeps("C", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps C: %v", err)
-	}
-
-	g, err := js.DepsGraph("A")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
-	order, err := js.ExecutionOrder(g)
-	if err != nil {
-		t.Fatalf("ExecutionOrder failed: %v", err)
+	if _, err := js.RunGraph("err-root"); err != nil {
+		t.Fatalf("RunGraph: %v", err)
 	}
 
-	for _, key := range order {
-		if key == "B" || key == "D" {
-			t.Errorf("expected Fixed vertex B and its child D to be skipped, got order %v", order)
+	done := make(chan error, 1)
+	go func() {
+		_, err := js.ExecRunGraph("err-root")
+		done <- err
+	}()
+
+	waitStarted(t, leaf.started, "err-leaf")
+	close(leafRelease)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected ExecRunGraph to stop after the level failed")
 		}
-	}
-	if len(order) != 2 {
-		t.Fatalf("expected 2 vertices in order (A and C), got %v", order)
-	}
-	assertBefore(t, order, "A", "C")
-}
-
-func TestExecutionOrderLeavesFirst(t *testing.T) {
-	js := newTestJobService(t)
-	registerKeys(t, js.Store, "A", "B", "C")
-
-	// A -> B -> C; leaves first means C, B, A.
-	if err := js.Store.SetDeps("A", []string{"B"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
-	}
-	if err := js.Store.SetDeps("B", []string{"C"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
-	}
-
-	g, err := js.DepsGraph("A")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
-	order, err := js.ExecutionOrderLeavesFirst(g)
-	if err != nil {
-		t.Fatalf("ExecutionOrderLeavesFirst failed: %v", err)
-	}
-	assertBefore(t, order, "C", "B")
-	assertBefore(t, order, "B", "A")
-}
-
-func TestExecutionOrderLeavesFirstSkipsFixed(t *testing.T) {
-	js := newTestJobService(t)
-
-	// A -> B (fixed) -> D, and A -> C -> D: leaves first still skips B and D.
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Fixed: true}); err != nil {
-		t.Fatalf("failed to register key B: %v", err)
-	}
-	registerKeys(t, js.Store, "A", "C", "D")
-
-	if err := js.Store.SetDeps("A", []string{"B", "C"}); err != nil {
-		t.Fatalf("SetDeps A: %v", err)
-	}
-	if err := js.Store.SetDeps("B", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps B: %v", err)
-	}
-	if err := js.Store.SetDeps("C", []string{"D"}); err != nil {
-		t.Fatalf("SetDeps C: %v", err)
-	}
-
-	g, err := js.DepsGraph("A")
-	if err != nil {
-		t.Fatalf("DepsGraph failed: %v", err)
-	}
-	order, err := js.ExecutionOrderLeavesFirst(g)
-	if err != nil {
-		t.Fatalf("ExecutionOrderLeavesFirst failed: %v", err)
-	}
-
-	for _, key := range order {
-		if key == "B" || key == "D" {
-			t.Errorf("expected Fixed vertex B and its child D to be skipped, got order %v", order)
-		}
-	}
-	if len(order) != 2 {
-		t.Fatalf("expected 2 vertices in order (C and A), got %v", order)
-	}
-	// Leaves first: C before the root A.
-	assertBefore(t, order, "C", "A")
-}
-
-func TestDepsGraphErrors(t *testing.T) {
-	js := newTestJobService(t)
-
-	if _, err := js.DepsGraph(""); err == nil {
-		t.Errorf("expected an error for empty key, got nil")
-	}
-	if _, err := js.DepsGraph("missing"); err == nil {
-		t.Errorf("expected an error for unregistered key, got nil")
+	case <-root.started:
+		t.Fatal("next level started after the previous level failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for ExecRunGraph to stop")
 	}
 }
 
-func assertBefore(t *testing.T, order []string, first, second string) {
-	t.Helper()
-	idxFirst, idxSecond := -1, -1
-	for i, key := range order {
-		if key == first {
-			idxFirst = i
-		}
-		if key == second {
-			idxSecond = i
+func TestExecRunGraphLevelIncreaseStartsNewBranch(t *testing.T) {
+	s := store.New(nil, true)
+	js := &JobService{Store: s}
+
+	leafA := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	midA := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	deepB := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	leafB := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	midB := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	root := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
+	objs := map[string]*levelObj{
+		"br-leafA": leafA, "br-midA": midA, "br-deepB": deepB,
+		"br-leafB": leafB, "br-midB": midB, "br-root": root,
+	}
+	for key, obj := range objs {
+		if _, err := js.Store.Register(types.RegisterArgs{Key: key, Object: obj}); err != nil {
+			t.Fatalf("register %s: %v", key, err)
 		}
 	}
-	if idxFirst == -1 || idxSecond == -1 {
-		t.Fatalf("keys %q and %q not both present in order %v", first, second, order)
+	if _, err := js.RunGraph("br-root"); err != nil {
+		t.Fatalf("RunGraph: %v", err)
 	}
-	if idxFirst >= idxSecond {
-		t.Errorf("expected %q before %q in order %v", first, second, order)
+
+	// Leaves-first order that climbs branch A, then jumps to the deeper branch B.
+	nodes := make(map[string]*types.RunNode, len(objs))
+	order := []string{"br-leafA", "br-midA", "br-deepB", "br-leafB", "br-midB", "br-root"}
+	levels := map[string]int{
+		"br-leafA": 2, "br-midA": 1, "br-deepB": 3,
+		"br-leafB": 2, "br-midB": 1, "br-root": 0,
+	}
+	for key, level := range levels {
+		nodes[key] = &types.RunNode{Key: key, Level: level}
+	}
+	jobID := util.Ulid()
+	if ok := js.Store.DB.UpsertData("br-root_job", types.SetArgs{
+		Key:     "br-root_job",
+		StoreId: jobID,
+		JobId:   jobID,
+		Object: types.RunGraph{
+			RootKey: "br-root",
+			Order:   order,
+			Nodes:   nodes,
+		},
+	}); !ok {
+		t.Fatal("failed to publish branched run graph")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := js.ExecRunGraph("br-root")
+		done <- err
+	}()
+
+	waitStarted(t, leafA.started, "br-leafA")
+	select {
+	case <-midA.started:
+		t.Fatal("midA started before leafA finished")
+	default:
+	}
+	close(leafA.release)
+	waitStarted(t, midA.started, "br-midA")
+
+	// Level rose from 1 to 3: branch B must start without waiting for midA.
+	waitStarted(t, deepB.started, "br-deepB")
+	select {
+	case <-leafB.started:
+		t.Fatal("leafB started before deepB finished")
+	default:
+	}
+	close(deepB.release)
+	waitStarted(t, leafB.started, "br-leafB")
+	close(leafB.release)
+	waitStarted(t, midB.started, "br-midB")
+	select {
+	case <-root.started:
+		t.Fatal("root started before both branches finished")
+	default:
+	}
+	close(midA.release)
+	close(midB.release)
+	waitStarted(t, root.started, "br-root")
+	close(root.release)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ExecRunGraph: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for ExecRunGraph")
 	}
 }

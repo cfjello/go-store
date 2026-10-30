@@ -84,6 +84,12 @@ func NewStoreService(reset bool) *Store {
 	return storeInstance
 }
 
+// UpdMethod returns the name of the no-argument method invoked on a cached
+// object when a run-graph node is dirty.
+func (s *Store) UpdMethod() string {
+	return s.updMethod
+}
+
 // Register registers an object in the store
 func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 

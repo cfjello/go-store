@@ -230,7 +230,7 @@ func TypeInfoToType(info TypeInfo) (reflect.Type, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pointer element: %w", err)
 		}
-		return reflect.PtrTo(elemType), nil
+		return reflect.PointerTo(elemType), nil
 
 	case "interface":
 		return reflect.TypeOf((*interface{})(nil)).Elem(), nil
