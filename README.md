@@ -43,7 +43,7 @@ In-depth design references:
 
 ## Quick Start
 
-Requires Go 1.25+ with CGO enabled.
+Requires Go 1.25+ with CGO enabled. Import the convenience package as `gostore` (a Go package name cannot contain a hyphen). The original `pkg/store`, `pkg/types`, and `pkg/job` paths still work.
 
 ```bash
 go get github.com/cfjello/go-store
@@ -56,8 +56,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cfjello/go-store/pkg/store"
-	"github.com/cfjello/go-store/pkg/types"
+	gostore "github.com/cfjello/go-store"
 )
 
 type Counter struct {
@@ -70,15 +69,15 @@ func main() {
 	// Must be set before the store singleton is created.
 	os.Setenv("SQLITE_DB_URL", ":memory:")
 
-	s := store.NewStoreService(true)
+	s := gostore.NewStoreService(true)
 
 	counter := &Counter{Name: "clicks", Value: 0}
-	if _, err := s.Register(types.RegisterArgs{Key: "counter-1", Object: counter, Init: true, Check: true}); err != nil {
+	if _, err := s.Register(gostore.RegisterArgs{Key: "counter-1", Object: counter, Init: true, Check: true}); err != nil {
 		panic(err)
 	}
 
 	counter.Value = 42 // every Set stores a new immutable version
-	if _, err := s.Set(types.SetArgs{Key: "counter-1", Object: counter}); err != nil {
+	if _, err := s.Set(gostore.SetArgs{Key: "counter-1", Object: counter}); err != nil {
 		panic(err)
 	}
 

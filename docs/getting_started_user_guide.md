@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide takes you from a fresh checkout to a working program that registers an object, stores versions of it, and reads them back.
+This guide takes you from `go get` to a working program that registers an object, stores versions of it, and reads them back. You do not need to clone this repository to use the library.
 
 ## Prerequisites
 
@@ -9,8 +9,26 @@ This guide takes you from a fresh checkout to a working program that registers a
 
 ## Install
 
+In your own module:
+
 ```bash
 go get github.com/cfjello/go-store
+```
+
+Import the convenience package (package name `gostore` — a Go package name cannot contain a hyphen):
+
+```go
+import gostore "github.com/cfjello/go-store"
+```
+
+That path re-exports the store, job, types, config, and perf APIs. The original packages remain available if you prefer a narrower import:
+
+```go
+import (
+	"github.com/cfjello/go-store/pkg/store"
+	"github.com/cfjello/go-store/pkg/types"
+	"github.com/cfjello/go-store/pkg/job" // optional
+)
 ```
 
 ## Choose a database mode
@@ -32,8 +50,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cfjello/go-store/pkg/store"
-	"github.com/cfjello/go-store/pkg/types"
+	gostore "github.com/cfjello/go-store"
 )
 
 type Counter struct {
@@ -46,15 +63,15 @@ func main() {
 	os.Setenv("SQLITE_DB_URL", ":memory:")
 
 	// NewStoreService returns the process-wide singleton store backed by SQLite.
-	s := store.NewStoreService(true) // reset=true drops and recreates the schema
+	s := gostore.NewStoreService(true) // reset=true drops and recreates the schema
 
 	// 1. Register the object under a key. Init=true also stores the first version.
 	counter := &Counter{Name: "clicks", Value: 0}
-	meta, err := s.Register(types.RegisterArgs{
+	meta, err := s.Register(gostore.RegisterArgs{
 		Key:    "counter-1",
 		Object: counter,
-		Init:   true,  // store the initial value immediately
-		Check:  true,  // validate on every Set
+		Init:   true, // store the initial value immediately
+		Check:  true, // validate on every Set
 	})
 	if err != nil {
 		panic(err)
@@ -63,7 +80,7 @@ func main() {
 
 	// 2. Store a new version. Every Set creates a new ULID-addressed row.
 	counter.Value = 42
-	if _, err := s.Set(types.SetArgs{Key: "counter-1", Object: counter}); err != nil {
+	if _, err := s.Set(gostore.SetArgs{Key: "counter-1", Object: counter}); err != nil {
 		panic(err)
 	}
 
@@ -91,6 +108,8 @@ Key points:
 - Run the built-in HTTP server from the [Server guide](server_user_guide.md).
 
 ## Run the bundled examples
+
+Clone this repository only if you want the bundled examples or `cmd/api`. The library itself is used via `go get` as above.
 
 The [example/](../example/) directory contains complete programs:
 
