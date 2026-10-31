@@ -247,3 +247,48 @@ func TestBuildTypeInfo_ComplexStruct(t *testing.T) {
 		t.Errorf("Field 'Channel' not found or wrong type: %+v", chanField)
 	}
 }
+
+func TestBuildTypeInfo_IndependentOfContents(t *testing.T) {
+	empty := dynReflect.BuildTypeInfo(reflect.ValueOf([]SimpleStruct{}))
+	filled := dynReflect.BuildTypeInfo(reflect.ValueOf([]SimpleStruct{{Name: "a"}}))
+	if !empty.Equal(filled) {
+		t.Fatalf("empty and filled slices of the same type should match: %+v vs %+v", empty, filled)
+	}
+
+	var nilPtr *SimpleStruct
+	nilInfo := dynReflect.BuildTypeInfo(reflect.ValueOf(nilPtr))
+	nonNilInfo := dynReflect.BuildTypeInfo(reflect.ValueOf(&SimpleStruct{Name: "a"}))
+	if !nilInfo.Equal(nonNilInfo) {
+		t.Fatalf("nil and non-nil pointers of the same type should match: %+v vs %+v", nilInfo, nonNilInfo)
+	}
+}
+
+func TestTypeInfo_Equal(t *testing.T) {
+	a := dynReflect.BuildTypeInfo(reflect.ValueOf(SimpleStruct{}))
+	b := dynReflect.BuildTypeInfo(reflect.ValueOf(SimpleStruct{Name: "x", Age: 1}))
+	if !a.Equal(b) {
+		t.Fatal("same struct type should be equal regardless of field values")
+	}
+	other := dynReflect.BuildTypeInfo(reflect.ValueOf(NestedStruct{}))
+	if a.Equal(other) {
+		t.Fatal("different struct types should not be equal")
+	}
+}
+
+type recursiveNode struct {
+	Name string
+	Next *recursiveNode
+}
+
+func TestBuildTypeInfo_RecursiveStruct(t *testing.T) {
+	n := &recursiveNode{Name: "root"}
+	n.Next = n
+	info := dynReflect.BuildTypeInfo(reflect.ValueOf(n))
+	if info.Kind != "ptr" || info.Elem == nil || info.Elem.Kind != "struct" {
+		t.Fatalf("expected *struct, got %+v", info)
+	}
+	next, ok := info.Elem.Fields["Next"]
+	if !ok || next.Kind != "ptr" {
+		t.Fatalf("expected Next pointer field, got %+v", info.Elem.Fields)
+	}
+}

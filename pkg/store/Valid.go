@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/cfjello/go-store/pkg/dynReflect"
+	"github.com/cfjello/go-store/pkg/perf"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -15,6 +17,7 @@ var validate = validator.New()
 // SetCache) and runs struct-tag based validation (`validate:"..."` annotations)
 // against it using the shared validator instance.
 func (s *Store) ValidateCached(key string) error {
+	defer perf.Track("store.ValidateCached")()
 	cached, ok := s.GetCache(key)
 	if !ok {
 		return fmt.Errorf("no cached object found for key %q", key)
@@ -29,6 +32,20 @@ func (s *Store) ValidateCached(key string) error {
 		return fmt.Errorf("validation failed for key %q: %w", key, err)
 	}
 	return nil
+}
+
+// checkPayloadType compares the persisted payload's TypeInfo against the shape
+// recorded at Register. An empty registered TypeInfo (legacy metadata) skips
+// the comparison. payload is already the dataName field or the whole static object.
+func (s *Store) checkPayloadType(key string, registered dynReflect.TypeInfo, payload any) error {
+	if registered.Type == "" && registered.Kind == "" {
+		return nil
+	}
+	got := dynReflect.BuildTypeInfo(reflect.ValueOf(payload))
+	if registered.Equal(got) {
+		return nil
+	}
+	return fmt.Errorf("type mismatch for key %q: registered %s, got %s", key, registered.Type, got.Type)
 }
 
 // resolveStructValue dereferences pointers/interfaces down to the underlying struct value.

@@ -46,10 +46,10 @@ var stmtMap = map[string]string{
 						from main.data MD where MD.job_id = ?`,
 }
 
-func PrepareStmts(db *sql.DB) (map[string]*sql.Stmt, error) {
+func PrepareStmts(db *sql.DB, alias string) (map[string]*sql.Stmt, error) {
 
 	PreparedStmts := map[string]*sql.Stmt{}
-	prefix := GetPrefix()
+	prefix := alias
 
 	for name, query := range stmtMap {
 		persistOnly := strings.Contains(query, "@@")

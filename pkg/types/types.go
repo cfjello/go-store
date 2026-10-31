@@ -24,6 +24,7 @@ type MetaData struct {
 	ParentKey string              `json:"schema"`
 	AlwaysRun bool                `json:"alwaysRun,omitempty"`
 	DependsOn Dependencies        `json:"depends,omitempty"`
+	NotifyTo  NotifyList          `json:"notifyTo,omitempty"`
 	TypeInfo  dynReflect.TypeInfo `json:"typeInfo,omitempty"`
 }
 
@@ -93,7 +94,10 @@ func (m CheckMode) Resolve(fallback bool) bool {
 // SetArgs represents arguments for the set operation.
 // StoreId is the data row id (a new ULID per version). Key is stored as
 // meta_key so GetCurrStoreID(Key) can find the newest StoreId. ParentKey is
-// the schema key and is not written to the data table.
+// the schema key and is not written to the data table. Fixed and AlwaysRun
+// are opt-in: nil leaves the registered metadata unchanged, a non-nil pointer
+// (see Ptr) overwrites it, so a Set never clobbers object configuration by
+// accident.
 type SetArgs struct {
 	Key       string    `json:"key"`
 	Object    any       `json:"object"`
@@ -102,8 +106,8 @@ type SetArgs struct {
 	Check     CheckMode `json:"check,omitempty"`
 	ParentKey string    `json:"schemaKey,omitempty"`
 	Publish   bool      `json:"publish,omitempty"`
-	Fixed     bool      `json:"fixed,omitempty"`
-	AlwaysRun bool      `json:"alwaysRun,omitempty"`
+	Fixed     *bool     `json:"fixed,omitempty"`
+	AlwaysRun *bool     `json:"alwaysRun,omitempty"`
 }
 
 // Ptr returns a pointer to v, useful for optional pointer fields.
@@ -122,6 +126,7 @@ type RegisterArgs struct {
 	Fixed     bool         `json:"fixed,omitempty"`
 	AlwaysRun bool         `json:"alwaysRun,omitempty"`
 	DependsOn Dependencies `json:"depends,omitempty"`
+	NotifyTo  NotifyList   `json:"notifyTo,omitempty"`
 }
 
 // PublishArgs represents arguments for the publish operation

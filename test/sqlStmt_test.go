@@ -1,7 +1,6 @@
 package test
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/cfjello/go-store/internal/database"
@@ -17,11 +16,7 @@ import (
 // real development database (database.New would otherwise attach and, with
 // reset=true, drop tables in the default file DB).
 func TestMetaDataStmts(t *testing.T) {
-	t.Setenv("SQLITE_DB_URL", "file:"+filepath.Join(t.TempDir(), "test.db"))
-	t.Setenv("FILE_DB_ALIAS", "persist")
-
 	svc := database.New(true)
-	defer svc.Close()
 
 	for _, name := range []string{"MetaInsert", "MetaSelect", "DataInsert", "JobInsert"} {
 		if svc.SQL[name] == nil {
@@ -61,11 +56,7 @@ func TestMetaDataStmts(t *testing.T) {
 // TestGetMaxDataIDs verifies the dynamic IN-clause query that returns the
 // maximum data_id per meta_key for a variable-length list of meta_keys.
 func TestGetMaxDataIDs(t *testing.T) {
-	t.Setenv("SQLITE_DB_URL", "file:"+filepath.Join(t.TempDir(), "test.db"))
-	t.Setenv("FILE_DB_ALIAS", "persist")
-
 	svc := database.New(true)
-	defer svc.Close()
 
 	// Insert data rows across three meta_keys; two of them get multiple rows.
 	insert := func(dataID, jobID, metaID string) {
@@ -109,11 +100,7 @@ func TestGetMaxDataIDs(t *testing.T) {
 // object key (not the schema parent), that a reused job id does not collide,
 // and that a row written only to the file database is still found.
 func TestSetDataIndexesByObjectKey(t *testing.T) {
-	t.Setenv("SQLITE_DB_URL", "file:"+filepath.Join(t.TempDir(), "test.db"))
-	t.Setenv("FILE_DB_ALIAS", "persist")
-
 	svc := database.New(true)
-	defer svc.Close()
 
 	key := "maker-1"
 	args := types.SetArgs{

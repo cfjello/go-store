@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/cfjello/go-store/pkg/perf"
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
@@ -17,6 +18,16 @@ type JobService struct {
 	JobGraph graph.Graph[string, types.JobVertex]
 	Store    *store.Store
 	mu       sync.Mutex // guards JobGraph; ExecRunGraph uses only local state
+
+	// OnError, when set, receives the error of every failed notification run.
+	// When nil, failures are reported via log.Printf.
+	OnError func(key string, err error)
+
+	runsMu   sync.Mutex           // guards runs and inFlight
+	runs     map[string]*runState // per-key notification run state
+	inFlight int                  // number of active runLoop goroutines
+	idle     sync.Cond            // signalled when inFlight reaches 0; L is runsMu
+	objLocks sync.Map             // node key -> *sync.Mutex serializing updMethod calls
 }
 
 var js *JobService
@@ -30,6 +41,9 @@ func NewJobService(store *store.Store) *JobService {
 			JobGraph: g,
 			Store:    store,
 		}
+		// Register as the store's change notifier so successful Set/Publish
+		// calls enqueue update runs for the objects named in notify lists.
+		store.SetNotifier(js)
 	}
 	return js
 }
@@ -40,6 +54,7 @@ func NewJobService(store *store.Store) *JobService {
 // traversal is identified as a distinct job. The resulting graph is stored on
 // the service and returned.
 func (js *JobService) DepsGraph(key string) (graph.Graph[string, types.JobVertex], error) {
+	defer perf.Track("job.DepsGraph")()
 	if key == "" {
 		return nil, errors.New("the key cannot be empty")
 	}
@@ -207,6 +222,7 @@ func jobKey(rootKey string) string {
 // "job") when not already registered, and publishes the resulting RunGraph
 // snapshot to the store.
 func (js *JobService) RunGraph(rootKey string) (types.RunGraph, error) {
+	defer perf.Track("job.RunGraph")()
 	g, err := js.DepsGraph(rootKey)
 	if err != nil {
 		return types.RunGraph{}, fmt.Errorf("failed to build dependency graph for %q: %v", rootKey, err)
@@ -293,21 +309,10 @@ func (js *JobService) RunGraph(rootKey string) (types.RunGraph, error) {
 // prevLevel moves to the new branch. The first call (prevLevel == -1) does not
 // wait. A failed lookup or call stops later launches and is returned.
 func (js *JobService) ExecRunGraph(key string) (types.RunGraph, error) {
-	if key == "" {
-		return types.RunGraph{}, errors.New("the key cannot be empty")
-	}
-	jKey := jobKey(key)
-
-	// Find the newest stored run graph for this root element. ULIDs are
-	// time-ordered, so the largest jobId (storeId) is the newest snapshot.
-	storeID, err := js.Store.GetCurrStoreID(jKey)
+	defer perf.Track("job.ExecRunGraph")()
+	runGraph, err := js.LatestRunGraph(key)
 	if err != nil {
-		return types.RunGraph{}, fmt.Errorf("no stored job graph for %q: %v", jKey, err)
-	}
-	// GetData unmarshals directly into the typed RunGraph.
-	var runGraph types.RunGraph
-	if _, err := js.Store.DB.GetData(storeID, &runGraph); err != nil {
-		return types.RunGraph{}, fmt.Errorf("failed to load job graph %q: %v", jKey, err)
+		return types.RunGraph{}, err
 	}
 
 	// prevLevel is the level of the previous node. -1 means the walk has not
@@ -392,6 +397,12 @@ func (js *JobService) ExecRunGraph(key string) (types.RunGraph, error) {
 		batch.wg.Add(1)
 		go func(batch *levelBatch, obj any, nodeKey string) {
 			defer batch.wg.Done()
+			// Serialize updMethod calls per object: concurrent runs of
+			// different roots may share this node. One lock is held at a
+			// time and never nested, so this cannot deadlock.
+			mu := js.objLock(nodeKey)
+			mu.Lock()
+			defer mu.Unlock()
 			if err := callNoArgMethod(obj, method); err != nil {
 				batch.mu.Lock()
 				if batch.err == nil {

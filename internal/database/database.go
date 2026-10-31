@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cfjello/go-store/pkg/config"
+	"github.com/cfjello/go-store/pkg/dynReflect"
+	"github.com/cfjello/go-store/pkg/perf"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
 
@@ -21,8 +25,8 @@ import (
 type DBService struct {
 	DB      *sql.DB
 	SQL     map[string]*sql.Stmt
-	DbUrl   string // URL of the attached file database
-	DbAlias string // Alias for the attached file database, if any
+	DbUrl   string // URL of the main database (":memory:" or a file DSN)
+	DbAlias string // Alias of the attached persist layer; empty when there is none
 }
 
 var dbInstance *DBService
@@ -34,39 +38,72 @@ func New(reset bool) *DBService {
 	}
 	util.SetEnv() // Load default environment variables
 
-	// db, err := sql.Open("sqlite3", ":memory:")
-	db, err := sql.Open("sqlite3", ":memory:") // Open an in-memory SQLite database
+	// SQLITE_DB_URL selects the main database: empty or ":memory:" keeps an
+	// in-memory database; anything else opens a file database with
+	// SQLITE_DB_FLAGS appended to the DSN (WAL mode by default).
+	dbURL := os.Getenv("SQLITE_DB_URL")
+	inMemory := dbURL == "" || dbURL == ":memory:"
+
+	var db *sql.DB
+	var err error
+	if inMemory {
+		dbURL = ":memory:"
+		db, err = sql.Open("sqlite3", dbURL)
+	} else {
+		if mkErr := ensureParentDir(dbURL); mkErr != nil {
+			log.Fatalf("Failed to create directory for %s: %v", dbURL, mkErr)
+		}
+		db, err = sql.Open("sqlite3", dbURL+os.Getenv("SQLITE_DB_FLAGS"))
+	}
 	if err != nil {
-		log.Fatalf("Failed to open in-memory database: %v", err)
+		log.Fatalf("Failed to open database %s: %v", dbURL, err)
 	}
 
-	fileDbPath := os.Getenv("SQLITE_DB_URL")
-	fileDbAlias := os.Getenv("FILE_DB_ALIAS")
+	// Pool sizing. An in-memory SQLite database is per connection: a second
+	// pooled connection would open its own empty database, so the pool is
+	// pinned to a single connection. A file database in WAL mode supports
+	// concurrent readers and a single writer across connections, so the pool
+	// size is configurable via SQLITE_MAX_CONNS (default 4); SQLITE_BUSY under
+	// concurrent writers is handled by _busy_timeout in SQLITE_DB_FLAGS.
+	if inMemory {
+		db.SetMaxOpenConns(1)
+	} else {
+		n := maxOpenConns()
+		db.SetMaxOpenConns(n)
+		db.SetMaxIdleConns(n)
+	}
 
 	dbInstance = &DBService{
-		DbUrl:   fileDbPath,
+		DbUrl:   dbURL,
 		DB:      db,
 		SQL:     nil, // Will be populated by PrepareStmts
-		DbAlias: fileDbAlias,
+		DbAlias: "",  // Set when a persist layer is attached below
 	}
 
-	// Optionally attach a file database if specified in environment
-	if fileDbPath != "" {
-		if fileDbAlias == "" {
-			fileDbAlias = "persist" // Default alias if not set
-		}
-		err := dbInstance.AttachFileDB(fileDbPath, fileDbAlias)
-		if err != nil {
-			log.Fatalf("Error: Failed to attach file database: %v", err)
+	// Optionally attach a file database as the persist layer. This is only
+	// meaningful alongside an in-memory main database: a file main database
+	// is already persistent, so nothing is attached in file mode.
+	if inMemory {
+		if attachURL := os.Getenv("SQLITE_ATTACH_URL"); attachURL != "" {
+			alias := os.Getenv("FILE_DB_ALIAS")
+			if alias == "" {
+				alias = "persist" // Default alias if not set
+			}
+			if err := dbInstance.AttachFileDB(attachURL, alias); err != nil {
+				log.Fatalf("Error: Failed to attach file database: %v", err)
+			}
+			dbInstance.DbAlias = alias
 		}
 	}
-	// Initialize the in-memory and optionally the file database schema
-	if err := initDB(db, reset); err != nil {
+
+	// Initialize the schema: always the main schema, plus the attached
+	// persist schema when present.
+	if err := initDB(db, reset, dbInstance.DbAlias); err != nil {
 		log.Fatalf("Failed to initialize database schema: %v", err)
 	}
 
 	// Prepare SQL statements
-	sqlStmts, err := PrepareStmts(db)
+	sqlStmts, err := PrepareStmts(db, dbInstance.DbAlias)
 	if err != nil {
 		log.Fatalf("Failed to prepare SQL statements: %v", err)
 	}
@@ -77,31 +114,67 @@ func New(reset bool) *DBService {
 	return dbInstance
 }
 
+// maxOpenConns reads SQLITE_MAX_CONNS, defaulting to 4 when unset or invalid.
+func maxOpenConns() int {
+	n, err := strconv.Atoi(os.Getenv("SQLITE_MAX_CONNS"))
+	if err != nil || n < 1 {
+		return 4
+	}
+	return n
+}
+
+// ensureParentDir creates the parent directory of a file DSN when needed.
+// Accepts "file:<path>?<query>" URLs and bare paths.
+func ensureParentDir(dbURL string) error {
+	p := strings.TrimPrefix(dbURL, "file:")
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	dir := filepath.Dir(p)
+	if dir == "" || dir == "." {
+		return nil
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
 func (s *DBService) SetData(key string, args types.SetArgs) bool {
+	defer perf.Track("db.SetData")()
 	// Implementation for setting data in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ObjJSON, err := json.Marshal(args.Object)
+	ObjJSON, err := marshalStoredObject(args.Object)
 	if err != nil {
 		log.Printf("Failed to marshal object data for key: %s, error: %v", key, err)
 		return false
 	}
 
 	storeID, jobID := dataIDs(args)
-	// Always write the in-memory row. GetCurrStoreID and GetData read main
-	// first; Publish additionally copies the same version to the file database.
+	// Always write the main row. Publish additionally copies the same version
+	// to the attached persist layer, when one is attached (a file main
+	// database is already persistent and has no separate persist layer).
 	if err := execDataInsert(ctx, s.SQL["DataInsert"], storeID, jobID, key, ObjJSON); err != nil {
 		log.Printf("Failed to execute statement for key: %s, error: %v", key, err)
 		return false
 	}
-	if args.Publish {
+	if args.Publish && s.DbAlias != "" {
 		if err := execDataInsert(ctx, s.SQL["pDataInsert"], storeID, jobID, key, ObjJSON); err != nil {
 			log.Printf("Failed to execute persistent statement for key: %s, error: %v", key, err)
 			return false
 		}
 	}
 	return true
+}
+
+// marshalStoredObject encodes the value that belongs in data_json. When obj has
+// an exported field matching Names.DataName (default "data"), that field is the
+// payload. Otherwise the whole object is stored — the standalone static case.
+func marshalStoredObject(obj any) ([]byte, error) {
+	payload := obj
+	if v, ok := dynReflect.DataValue(obj, config.DefaultConfig().Names.DataName); ok {
+		payload = v
+	}
+	return json.Marshal(payload)
 }
 
 // dataIDs returns the data_id and job_id for a version. A missing store id is
@@ -141,10 +214,11 @@ func execDataInsert(ctx context.Context, stmt *sql.Stmt, storeID, jobID, metaKey
 
 // UpsertData performs an INSERT or UPDATE operation (UPSERT)
 func (s *DBService) UpsertData(key string, args types.SetArgs) bool {
+	defer perf.Track("db.UpsertData")()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ObjJSON, err := json.Marshal(args.Object)
+	ObjJSON, err := marshalStoredObject(args.Object)
 	if err != nil {
 		log.Printf("Failed to marshal object data for key: %s, error: %v", key, err)
 		return false
@@ -182,6 +256,7 @@ func (s *DBService) UpsertData(key string, args types.SetArgs) bool {
 // the JSON data is unmarshalled directly into out (which must be a pointer);
 // otherwise the data is decoded into a generic value and returned.
 func (s *DBService) GetData(key string, out any) (any, error) {
+	defer perf.Track("db.GetData")()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -213,6 +288,7 @@ func (s *DBService) GetData(key string, out any) (any, error) {
 }
 
 func (s *DBService) SetMeta(key string, value types.MetaData) bool {
+	defer perf.Track("db.SetMeta")()
 	// Implementation for setting metadata in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -266,6 +342,7 @@ func (s *DBService) UpsertMeta(key string, value types.MetaData) bool {
 }
 
 func (s *DBService) GetMeta(key string, schemaKey string) (types.MetaData, error) {
+	defer perf.Track("db.GetMeta")()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -342,6 +419,11 @@ func (s *DBService) GetCurrJobDef(key string, schemaKey string) (types.JobDbEntr
 
 // SetJobData sets job data for a given JobID
 func (s *DBService) PersistJob(JobID string) error {
+	if s.DbAlias == "" {
+		// No attached persist layer: either the main database is in-memory
+		// without an attachment, or it is already the persistent store.
+		return nil
+	}
 	// Implementation for setting job data in the database
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
@@ -353,18 +435,21 @@ func (s *DBService) PersistJob(JobID string) error {
 	}
 	defer tx.Rollback()
 
-	_, err = s.SQL["pJobData"].ExecContext(ctx, JobID)
+	// Bind the prepared statements to the transaction: the pool is pinned to
+	// a single connection, so pool-level statements would wait for the
+	// connection this transaction holds and deadlock.
+	_, err = tx.StmtContext(ctx, s.SQL["pJobData"]).ExecContext(ctx, JobID)
 	if err != nil {
 		log.Printf("Failed to insert job data for JobID: %s, error: %v", JobID, err)
 		return nil
 	}
-	_, err = s.SQL["pJob"].ExecContext(ctx, JobID)
+	_, err = tx.StmtContext(ctx, s.SQL["pJob"]).ExecContext(ctx, JobID)
 	if err != nil {
 		log.Printf("Failed to persist job data for JobID: %s, error: %v", JobID, err)
 		return err
 	}
 
-	_, err = s.SQL["pJobMeta"].ExecContext(ctx, JobID)
+	_, err = tx.StmtContext(ctx, s.SQL["pJobMeta"]).ExecContext(ctx, JobID)
 	if err != nil {
 		log.Printf("Failed to persist meta data for JobID: %s, error: %v", JobID, err)
 		return err
@@ -392,6 +477,7 @@ func (s *DBService) PersistJob(JobID string) error {
 	}
 */
 func (s *DBService) GetCurrStoreID(key string) (string, error) {
+	defer perf.Track("db.GetCurrStoreID")()
 	// Implementation for getting current store ID. Reads the in-memory table
 	// first, then the attached file database, so a published version is still
 	// found after the process restarts.
@@ -453,7 +539,7 @@ func (s *DBService) GetMaxDataIDs(metaIDs []string, persist bool) (map[string]st
 
 	schema := "main"
 	if persist {
-		prefix := GetPrefix()
+		prefix := s.DbAlias
 		if prefix == "" {
 			return nil, fmt.Errorf("no file database attached: cannot query persisted max data IDs")
 		}
@@ -549,7 +635,7 @@ func (s *DBService) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *DBService) Close() error {
-	if s.DbUrl != "" {
+	if s.DbAlias != "" {
 		s.DetachFileDB(s.DbAlias)
 	}
 	log.Printf("Disconnecting from database: %s", s.DbUrl)

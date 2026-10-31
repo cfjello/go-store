@@ -17,6 +17,33 @@ type TypeInfo struct {
 	ValueType *TypeInfo           `json:"valueType,omitempty"` // For maps
 }
 
+// Equal reports whether a and b describe the same type structure.
+func (a TypeInfo) Equal(b TypeInfo) bool {
+	if a.Type != b.Type || a.Kind != b.Kind {
+		return false
+	}
+	if !typeInfoPtrEqual(a.Elem, b.Elem) || !typeInfoPtrEqual(a.KeyType, b.KeyType) || !typeInfoPtrEqual(a.ValueType, b.ValueType) {
+		return false
+	}
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for name, field := range a.Fields {
+		other, ok := b.Fields[name]
+		if !ok || !field.Equal(other) {
+			return false
+		}
+	}
+	return true
+}
+
+func typeInfoPtrEqual(a, b *TypeInfo) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
 // ObjectToTypeJSON converts an object to a JSON representation of its type structure
 func ObjectToTypeJSON(obj interface{}) (string, error) {
 	typeInfo := BuildTypeInfo(reflect.ValueOf(obj))
@@ -43,113 +70,58 @@ func JSONToObjectType(jsonData string) (interface{}, error) {
 	return reflect.New(t).Elem().Interface(), nil
 }
 
-// BuildTypeInfo recursively builds type information for a value
+// BuildTypeInfo records the declared type of v. The result does not depend on
+// whether collections are empty, pointers are nil, or interface values hold a
+// concrete type — those are value details, not the type used for Set checks.
 func BuildTypeInfo(v reflect.Value) TypeInfo {
-	t := v.Type()
+	if !v.IsValid() {
+		return TypeInfo{}
+	}
+	return BuildTypeInfoFromType(v.Type())
+}
+
+// BuildTypeInfoFromType recursively describes t. Cyclic types are truncated to
+// Type and Kind on the second visit so recursive structs cannot overflow.
+func BuildTypeInfoFromType(t reflect.Type) TypeInfo {
+	if t == nil {
+		return TypeInfo{}
+	}
+	return buildTypeInfoFromType(t, make(map[reflect.Type]struct{}))
+}
+
+func buildTypeInfoFromType(t reflect.Type, seen map[reflect.Type]struct{}) TypeInfo {
 	info := TypeInfo{
 		Type: t.String(),
 		Kind: t.Kind().String(),
 	}
+	if _, ok := seen[t]; ok {
+		return info
+	}
+	seen[t] = struct{}{}
 
 	switch t.Kind() {
 	case reflect.Struct:
-		info.Fields = make(map[string]TypeInfo)
+		info.Fields = make(map[string]TypeInfo, t.NumField())
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			// Skip unexported fields
-			if field.PkgPath != "" {
+			if !field.IsExported() {
 				continue
 			}
-			fieldValue := v.Field(i)
-			info.Fields[field.Name] = BuildTypeInfo(fieldValue)
+			info.Fields[field.Name] = buildTypeInfoFromType(field.Type, seen)
 		}
 
 	case reflect.Map:
-		// For maps, capture both key and value types
-		keyType := t.Key()
-		keyInfo := TypeInfo{
-			Type: keyType.String(),
-			Kind: keyType.Kind().String(),
-		}
+		keyInfo := buildTypeInfoFromType(t.Key(), seen)
 		info.KeyType = &keyInfo
-
-		valueType := t.Elem()
-		valueInfo := TypeInfo{
-			Type: valueType.String(),
-			Kind: valueType.Kind().String(),
-		}
+		valueInfo := buildTypeInfoFromType(t.Elem(), seen)
 		info.ValueType = &valueInfo
 
-		// If the map has elements and value type is complex, examine a sample
-		if v.Len() > 0 && isComplexType(valueType.Kind()) {
-			iter := v.MapRange()
-			if iter.Next() {
-				sampleValue := BuildTypeInfo(iter.Value())
-				info.ValueType = &sampleValue
-			}
-		}
-
-	case reflect.Slice, reflect.Array:
-		// For slices and arrays, capture element type
-		elemType := t.Elem()
-		elemInfo := TypeInfo{
-			Type: elemType.String(),
-			Kind: elemType.Kind().String(),
-		}
-
-		// If the slice/array has elements and element type is complex, examine a sample
-		if v.Len() > 0 && isComplexType(elemType.Kind()) {
-			sampleElem := BuildTypeInfo(v.Index(0))
-			info.Elem = &sampleElem
-		} else {
-			info.Elem = &elemInfo
-		}
-
-	case reflect.Ptr:
-		// For pointers, capture the type it points to
-		elemType := t.Elem()
-		elemInfo := TypeInfo{
-			Type: elemType.String(),
-			Kind: elemType.Kind().String(),
-		}
-
-		// If the pointer is not nil and points to a complex type, examine what it points to
-		if !v.IsNil() && isComplexType(elemType.Kind()) {
-			pointedValue := BuildTypeInfo(v.Elem())
-			info.Elem = &pointedValue
-		} else {
-			info.Elem = &elemInfo
-		}
-
-	case reflect.Interface:
-		// For interfaces, if not nil, examine the concrete type
-		if !v.IsNil() {
-			concreteValue := BuildTypeInfo(v.Elem())
-			info.Elem = &concreteValue
-		}
-
-	case reflect.Chan:
-		// For channels, capture element type
-		elemType := t.Elem()
-		elemInfo := TypeInfo{
-			Type: elemType.String(),
-			Kind: elemType.Kind().String(),
-		}
+	case reflect.Slice, reflect.Array, reflect.Ptr, reflect.Chan:
+		elemInfo := buildTypeInfoFromType(t.Elem(), seen)
 		info.Elem = &elemInfo
 	}
 
 	return info
-}
-
-// isComplexType returns true if the kind represents a complex type
-// that might need further inspection
-func isComplexType(kind reflect.Kind) bool {
-	switch kind {
-	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array, reflect.Ptr, reflect.Interface:
-		return true
-	default:
-		return false
-	}
 }
 
 // primitiveTypes maps a reflect.Kind's string form to a sample value of that kind's type.

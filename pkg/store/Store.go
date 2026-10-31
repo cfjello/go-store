@@ -11,6 +11,7 @@ import (
 
 	// "github.com/cfjello/go-store/pkg/job"
 	"github.com/cfjello/go-store/pkg/config"
+	"github.com/cfjello/go-store/pkg/perf"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
 )
@@ -44,6 +45,11 @@ type Store struct {
 
 	dataName  string
 	updMethod string
+
+	// notifier receives change notifications after successful Set/Publish
+	// calls. Set once during setup via SetNotifier (nil-safe: no notifier
+	// means no notifications).
+	notifier Notifier
 }
 
 // var Store *StoreService
@@ -92,6 +98,7 @@ func (s *Store) UpdMethod() string {
 
 // Register registers an object in the store
 func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
+	defer perf.Track("store.Register")()
 
 	if args.Key == "" {
 		return types.MetaData{}, errors.New("the key cannot be empty")
@@ -99,6 +106,13 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 
 	if args.Object == nil {
 		return types.MetaData{}, fmt.Errorf("the address of the object is not valid")
+	}
+	// No update method means a standalone static data object: jobs never
+	// recompute it, so Fixed is forced on regardless of the caller's flag.
+	if !s.hasUpdMethod(args.Object) {
+		args.Fixed = true
+	} else if !s.hasDataField(args.Object) {
+		return types.MetaData{}, fmt.Errorf("object %q implements %s but has no %q data field", args.Key, s.updMethod, s.dataName)
 	}
 	// Cache a reference to the registered object for later retrieval by key
 	s.SetCache(args.Key, args.Object)
@@ -126,10 +140,13 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 	// Resolve the dependencies for the metadata: when the parent key equals the
 	// key, use the dependencies from the register arguments; when it differs,
 	// merge the parent's dependencies with the ones provided. Default to an
-	// empty list when there are no dependencies.
+	// empty list when there are no dependencies. The notify list resolves the
+	// same way: a parent's notify list propagates to objects registered under it.
 	var dependsOn types.Dependencies
+	var notifyTo types.NotifyList
 	if parentKey == args.Key {
 		dependsOn.SetDeps(args.DependsOn.DependsOn)
+		notifyTo.Set(args.NotifyTo)
 	} else {
 		parentMeta, err := s.GetMeta(parentKey)
 		if err != nil {
@@ -137,16 +154,19 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 		}
 		dependsOn.SetDeps(parentMeta.DependsOn.GetDeps())
 		dependsOn.MergeDeps(args.DependsOn)
+		notifyTo.Set(parentMeta.NotifyTo)
+		notifyTo.Merge(args.NotifyTo)
 	}
 	if len(dependsOn.DependsOn) == 0 {
 		dependsOn.DependsOn = []string{}
 	}
 	meta.DependsOn = dependsOn
+	meta.NotifyTo = notifyTo
 
-	if args.Init {
-		typeInfo := dynReflect.BuildTypeInfo(reflect.ValueOf(args.Object))
-		meta.TypeInfo = typeInfo
-	}
+	// TypeInfo is the shape of the persisted payload: the dataName field when
+	// present, otherwise the whole object (static data with no data field and
+	// no update method). Checked Set compares the write payload against this.
+	meta.TypeInfo = dynReflect.BuildTypeInfo(reflect.ValueOf(s.storedPayload(args.Object)))
 	// Register the key in the store
 	if !s.SetMeta(meta.Key, meta) {
 		return types.MetaData{}, fmt.Errorf("failed to register object named: %s", args.Key)
@@ -158,7 +178,7 @@ func (s *Store) Register(args types.RegisterArgs) (types.MetaData, error) {
 		}
 		res := s.DB.SetData(args.Key, types.SetArgs{
 			Key:       args.Key,
-			Object:    args.Object,
+			Object:    s.storedPayload(args.Object),
 			JobId:     "",
 			Check:     checkMode,
 			ParentKey: meta.ParentKey,
@@ -181,6 +201,7 @@ func (s *Store) IsRegistered(key string) bool {
 
 // Set stores an object in the store
 func (s *Store) Set(args types.SetArgs) (types.MetaData, error) {
+	defer perf.Track("store.Set")()
 
 	if args.Object == nil || args.Key == "" {
 		return types.MetaData{}, errors.New("an named object must be passed to the store")
@@ -204,39 +225,57 @@ func (s *Store) Set(args types.SetArgs) (types.MetaData, error) {
 		return types.MetaData{}, fmt.Errorf("object %s is not registered: %v", args.Key, err)
 	}
 
-	// Allow a Set to flip the Fixed flag on the existing metadata, but only
-	// before the object has been initialized (meta.Init=true freezes Fixed).
-	if args.Fixed != meta.Fixed {
+	// Allow a Set to flip the Fixed flag on the existing metadata only when
+	// explicitly requested (non-nil), and only before the object has been
+	// initialized (meta.Init=true freezes Fixed).
+	if args.Fixed != nil && *args.Fixed != meta.Fixed {
 		if meta.Init {
 			return types.MetaData{}, fmt.Errorf("cannot change Fixed on initialized object %s", meta.Key)
 		}
-		meta.Fixed = args.Fixed
+		meta.Fixed = *args.Fixed
 		s.SetMeta(meta.Key, meta)
 	}
-	// Allow a Set to update the AlwaysRun flag on the existing metadata.
-	if args.AlwaysRun != meta.AlwaysRun {
-		meta.AlwaysRun = args.AlwaysRun
+	// Allow a Set to update the AlwaysRun flag only when explicitly requested
+	// (non-nil); an unspecified flag leaves the registered value intact.
+	if args.AlwaysRun != nil && *args.AlwaysRun != meta.AlwaysRun {
+		meta.AlwaysRun = *args.AlwaysRun
 		s.SetMeta(meta.Key, meta)
 	}
 
 	// args.Check left unspecified (CheckNone) defers to the existing metadata's Check flag
 	check := args.Check.Resolve(meta.Check)
-	// Validate the object if check is true
+	payload := s.storedPayload(args.Object)
 	if check {
+		if err := s.checkPayloadType(meta.Key, meta.TypeInfo, payload); err != nil {
+			return types.MetaData{}, err
+		}
 		if err := s.ValidateCached(meta.Key); err != nil {
 			return types.MetaData{}, err
 		}
 	}
-	// store the object data
+	// store the object data (the data field when present, else the whole object)
+	args.Object = payload
 	if !s.DB.SetData(args.Key, args) {
 		return types.MetaData{}, fmt.Errorf("failed to store data for %s", meta.Key)
 	}
+	// The write succeeded: notify every object named in the notify list.
+	s.notifyChange(meta)
 	return meta, nil
 }
 
 func (s *Store) Publish(args types.SetArgs) bool {
+	defer perf.Track("store.Publish")()
 	args.Publish = true
-	return s.DB.SetData(args.Key, args)
+	args.Object = s.storedPayload(args.Object)
+	if !s.DB.SetData(args.Key, args) {
+		return false
+	}
+	// The write succeeded: notify every object named in the notify list. A
+	// metadata lookup failure only skips the notification, never the publish.
+	if meta, err := s.GetMeta(args.Key); err == nil {
+		s.notifyChange(meta)
+	}
+	return true
 }
 
 // IsPublished checks if a key has been published
@@ -265,11 +304,13 @@ func (s *Store) UnRegister(key string) bool {
 
 // SetMeta sets metadata for a key
 func (s *Store) SetMeta(key string, meta types.MetaData) bool {
+	defer perf.Track("store.SetMeta")()
 	return s.DB.SetMeta(key, meta)
 }
 
 // GetMeta gets metadata for a key
 func (s *Store) GetMeta(key string, schemaKeys ...string) (types.MetaData, error) {
+	defer perf.Track("store.GetMeta")()
 	schemaKey := key
 	if len(schemaKeys) > 0 {
 		schemaKey = schemaKeys[0]
@@ -376,6 +417,7 @@ func (s *Store) MergeDeps(key string, srcKeys []string) error {
 
 // Get gets an object from the store
 func (s *Store) Get(storeID string, key string, userObj any) (any, error) {
+	defer perf.Track("store.Get")()
 	if key == "" && storeID == "" {
 		return *new(any), errors.New("no \"key\" provided for Get()")
 	}
@@ -391,11 +433,50 @@ func (s *Store) Get(storeID string, key string, userObj any) (any, error) {
 		return *new(any), errors.New("no \"storeId\" provided for getData()")
 	}
 
-	objData, err := s.DB.GetData(storeID, userObj)
+	// The stored JSON is the data field when present; otherwise the whole
+	// object (standalone static data with no updMethod / no data field).
+	dest := s.payloadDest(userObj)
+	objData, err := s.DB.GetData(storeID, dest)
 	if err != nil {
 		return *new(any), fmt.Errorf("failed to fetch data for %s with storeId: %s: %v", key, storeID, err)
 	}
 	return objData, nil
+}
+
+// hasUpdMethod reports whether obj implements the store's no-argument update method.
+func (s *Store) hasUpdMethod(obj any) bool {
+	if obj == nil || s.updMethod == "" {
+		return false
+	}
+	m := reflect.ValueOf(obj).MethodByName(s.updMethod)
+	return m.IsValid() && m.Type().NumIn() == 0
+}
+
+// storedPayload is the value persisted for obj: the field named dataName when
+// present, otherwise the object itself (standalone static data).
+func (s *Store) storedPayload(obj any) any {
+	if v, ok := dynReflect.DataValue(obj, s.dataName); ok {
+		return v
+	}
+	return obj
+}
+
+func (s *Store) hasDataField(obj any) bool {
+	_, ok := dynReflect.DataValue(obj, s.dataName)
+	return ok
+}
+
+func (s *Store) dataFieldPtr(obj any) (any, bool) {
+	return dynReflect.DataFieldPtr(obj, s.dataName)
+}
+
+// payloadDest is the unmarshal target for stored JSON: a pointer to
+// obj[dataName] when that field exists, otherwise obj itself.
+func (s *Store) payloadDest(obj any) any {
+	if ptr, ok := s.dataFieldPtr(obj); ok {
+		return ptr
+	}
+	return obj
 }
 
 /*

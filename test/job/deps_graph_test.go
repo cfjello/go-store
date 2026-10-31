@@ -1,27 +1,38 @@
-package job
+package job_test
 
 import (
 	"testing"
 
+	"github.com/cfjello/go-store/pkg/job"
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
 )
 
-// newTestJobService creates a JobService backed by a fresh in-memory store.
-func newTestJobService(t *testing.T) *JobService {
+// graphObj is a runnable store object: it has SetData and a data field, so
+// Register does not force Fixed.
+type graphObj struct {
+	Data struct{} `json:"data"`
+}
+
+func (o *graphObj) SetData() error { return nil }
+
+// newTestJobService creates a JobService backed by a store. A new struct is
+// used instead of NewJobService so tests do not share the process-wide
+// JobService singleton.
+func newTestJobService(t *testing.T) *job.JobService {
 	t.Helper()
-	s := store.NewStoreService(true) // reset = true
+	s := store.New(nil, true)
 	if s == nil {
 		t.Fatalf("failed to create store service")
 	}
-	return NewJobService(s)
+	return &job.JobService{Store: s}
 }
 
-// registerKeys registers the given keys without dependencies.
+// registerKeys registers the given keys as runnable objects without dependencies.
 func registerKeys(t *testing.T, s *store.Store, keys ...string) {
 	t.Helper()
 	for _, key := range keys {
-		if _, err := s.Register(types.RegisterArgs{Key: key}); err != nil {
+		if _, err := s.Register(types.RegisterArgs{Key: key, Object: &graphObj{}}); err != nil {
 			t.Fatalf("failed to register key %q: %v", key, err)
 		}
 	}
@@ -120,7 +131,7 @@ func TestDepsGraphCycle(t *testing.T) {
 func TestDepsGraphVertexFixed(t *testing.T) {
 	js := newTestJobService(t)
 
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "F", Fixed: true}); err != nil {
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "F", Object: &struct{}{}, Fixed: true}); err != nil {
 		t.Fatalf("failed to register key F: %v", err)
 	}
 	registerKeys(t, js.Store, "G")
@@ -165,7 +176,7 @@ func TestExecutionOrderSkipsFixed(t *testing.T) {
 
 	// A -> B (fixed) -> D, and A -> C -> D.
 	// B and its child D must be skipped; A and C remain.
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Fixed: true}); err != nil {
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Object: &struct{}{}, Fixed: true}); err != nil {
 		t.Fatalf("failed to register key B: %v", err)
 	}
 	registerKeys(t, js.Store, "A", "C", "D")
@@ -228,7 +239,7 @@ func TestExecutionOrderLeavesFirstSkipsFixed(t *testing.T) {
 	js := newTestJobService(t)
 
 	// A -> B (fixed) -> D, and A -> C -> D: leaves first still skips B and D.
-	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Fixed: true}); err != nil {
+	if _, err := js.Store.Register(types.RegisterArgs{Key: "B", Object: &struct{}{}, Fixed: true}); err != nil {
 		t.Fatalf("failed to register key B: %v", err)
 	}
 	registerKeys(t, js.Store, "A", "C", "D")

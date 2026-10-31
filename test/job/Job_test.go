@@ -1,16 +1,18 @@
-package job
+package job_test
 
 import (
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/cfjello/go-store/pkg/job"
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
 	"github.com/cfjello/go-store/pkg/util"
 )
 
 type setDataObj struct {
+	Data  struct{} `json:"data"`
 	calls int
 	err   error
 }
@@ -20,33 +22,9 @@ func (o *setDataObj) SetData() error {
 	return o.err
 }
 
-func (o *setDataObj) WithArg(n int) {}
-
-func TestCallNoArgMethod(t *testing.T) {
-	okObj := &setDataObj{}
-	if err := callNoArgMethod(okObj, "SetData"); err != nil {
-		t.Fatalf("SetData: %v", err)
-	}
-	if okObj.calls != 1 {
-		t.Fatalf("SetData calls = %d, want 1", okObj.calls)
-	}
-
-	failObj := &setDataObj{err: errors.New("update failed")}
-	if err := callNoArgMethod(failObj, "SetData"); err == nil || err.Error() != "update failed" {
-		t.Fatalf("SetData error = %v, want update failed", err)
-	}
-
-	if err := callNoArgMethod(okObj, "Missing"); err == nil {
-		t.Fatal("expected missing method to fail")
-	}
-	if err := callNoArgMethod(okObj, "WithArg"); err == nil {
-		t.Fatal("expected a method that requires arguments to fail")
-	}
-}
-
 func TestExecRunGraphCallsUpdMethodAndStopsOnError(t *testing.T) {
 	s := store.New(nil, true)
-	js := &JobService{Store: s}
+	js := &job.JobService{Store: s}
 	if js.Store.UpdMethod() != "SetData" {
 		t.Fatalf("updMethod = %q, want SetData", js.Store.UpdMethod())
 	}
@@ -98,7 +76,7 @@ func TestExecRunGraphCallsUpdMethodAndStopsOnError(t *testing.T) {
 
 func TestExecRunGraphStoreIDRules(t *testing.T) {
 	s := store.New(nil, true)
-	js := &JobService{Store: s}
+	js := &job.JobService{Store: s}
 
 	missing := &setDataObj{}
 	if _, err := js.Store.Register(types.RegisterArgs{Key: "id-missing", Object: missing}); err != nil {
@@ -176,6 +154,7 @@ func TestExecRunGraphStoreIDRules(t *testing.T) {
 // levelObj blocks inside SetData so a test can observe same-level overlap and
 // the barrier before the next level starts.
 type levelObj struct {
+	Data    struct{} `json:"data"`
 	started chan struct{}
 	release chan struct{}
 	err     error
@@ -198,7 +177,7 @@ func waitStarted(t *testing.T, ch <-chan struct{}, what string) {
 
 func TestExecRunGraphLevelParallelism(t *testing.T) {
 	s := store.New(nil, true)
-	js := &JobService{Store: s}
+	js := &job.JobService{Store: s}
 
 	leafRelease := make(chan struct{})
 	leafA := &levelObj{started: make(chan struct{}), release: leafRelease}
@@ -260,7 +239,7 @@ func TestExecRunGraphLevelParallelism(t *testing.T) {
 
 func TestExecRunGraphLevelErrorStopsNextLevel(t *testing.T) {
 	s := store.New(nil, true)
-	js := &JobService{Store: s}
+	js := &job.JobService{Store: s}
 
 	leafRelease := make(chan struct{})
 	leaf := &levelObj{started: make(chan struct{}), release: leafRelease, err: errors.New("leaf failed")}
@@ -301,7 +280,7 @@ func TestExecRunGraphLevelErrorStopsNextLevel(t *testing.T) {
 
 func TestExecRunGraphLevelIncreaseStartsNewBranch(t *testing.T) {
 	s := store.New(nil, true)
-	js := &JobService{Store: s}
+	js := &job.JobService{Store: s}
 
 	leafA := &levelObj{started: make(chan struct{}), release: make(chan struct{})}
 	midA := &levelObj{started: make(chan struct{}), release: make(chan struct{})}

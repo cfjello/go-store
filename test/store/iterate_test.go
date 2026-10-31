@@ -21,7 +21,9 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("SQLITE_DB_URL", "file:"+filepath.Join(dir, "test.db"))
+	// In-memory main database with the temp file attached as persist layer.
+	os.Setenv("SQLITE_DB_URL", ":memory:")
+	os.Setenv("SQLITE_ATTACH_URL", "file:"+filepath.Join(dir, "test.db"))
 	os.Setenv("FILE_DB_ALIAS", "persist")
 	testStore = store.New(nil, true)
 	code := m.Run()
@@ -191,7 +193,9 @@ func TestDeletedKey(t *testing.T) {
 	}
 }
 
-type words []string
+type words struct {
+	Data []string `json:"data"`
+}
 
 var (
 	wordStore *store.Store
@@ -208,7 +212,7 @@ func (w *words) SetData() (string, error) {
 	if wordPage >= len(wordPages) {
 		return "", nil
 	}
-	page := words(wordPages[wordPage])
+	page := words{Data: wordPages[wordPage]}
 	wordPage++
 	if _, err := wordStore.Set(types.SetArgs{Key: wordKey, Object: page}); err != nil {
 		return "", err
@@ -225,7 +229,7 @@ func TestRestockSwitchesObjectAndKeepsCounter(t *testing.T) {
 	wordSame = false
 	t.Cleanup(func() { wordPages = nil })
 
-	start := words{"a", "b"}
+	start := words{Data: []string{"a", "b"}}
 	register(t, key, &start, true)
 	it, err := testStore.OpenIter(store.OpenOpts{Key: key, Restock: true, JobID: "j"})
 	if err != nil {
@@ -268,7 +272,7 @@ func TestRestockFalseStopsAtCollectionEnd(t *testing.T) {
 	wordPage = 0
 	wordSame = false
 
-	start := words{"a"}
+	start := words{Data: []string{"a"}}
 	register(t, key, &start, true)
 	it, err := testStore.OpenIter(store.OpenOpts{Key: key})
 	if err != nil {
@@ -293,7 +297,7 @@ func TestRestockSameStoreIDStops(t *testing.T) {
 	wordPage = 0
 	t.Cleanup(func() { wordSame = false })
 
-	start := words{"a"}
+	start := words{Data: []string{"a"}}
 	register(t, key, &start, true)
 	it, err := testStore.OpenIter(store.OpenOpts{Key: key, Restock: true})
 	if err != nil {
@@ -318,7 +322,7 @@ func TestCancelledRestockDoesNotStick(t *testing.T) {
 	wordPage = 0
 	wordSame = false
 
-	start := words{}
+	start := words{Data: []string{}}
 	register(t, key, &start, true)
 	it, err := testStore.OpenIter(store.OpenOpts{Key: key, Restock: true})
 	if err != nil {

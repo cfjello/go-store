@@ -1,8 +1,6 @@
 package types
 
 import (
-	"fmt"
-
 	"github.com/cfjello/go-store/pkg/util"
 )
 
@@ -50,16 +48,5 @@ func (d *Dependencies) RemoveDeps(deps ...string) {
 // ValidateDeps checks that no dependency is empty, none reference self, and each
 // is registered according to the provided isValid callback
 func ValidateDeps(self string, isValid func(string) bool, deps ...string) error {
-	for _, dep := range deps {
-		if dep == "" {
-			return fmt.Errorf("dependency key cannot be empty")
-		}
-		if dep == self {
-			return fmt.Errorf("object %q cannot depend on itself", self)
-		}
-		if !isValid(dep) {
-			return fmt.Errorf("dependency %q is not a registered object", dep)
-		}
-	}
-	return nil
+	return validateKeys("dependency", "cannot depend on itself", self, isValid, deps...)
 }

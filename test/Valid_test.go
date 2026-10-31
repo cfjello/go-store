@@ -1,11 +1,7 @@
 package test
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/cfjello/go-store/pkg/store"
 	"github.com/cfjello/go-store/pkg/types"
@@ -18,17 +14,11 @@ type sampleValidated struct {
 	Age  int    `validate:"gte=0,lte=130"`
 }
 
-// newValidTestStore points SQLITE_DB_URL at a throwaway file before creating the
-// store, so the underlying database.New singleton never attaches to the real dev
-// DB. The path intentionally isn't under t.TempDir(): database.New is a
-// process-wide singleton reused (and left open) by later tests in this package,
-// so forcing an auto-cleanup here would fail while the file is still in use.
+// newValidTestStore returns the package-test store. SQLITE_DB_URL is set in
+// TestMain; database.New is a process-wide singleton, so per-test env changes
+// cannot retarget it.
 func newValidTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	dbPath := filepath.Join(os.TempDir(), fmt.Sprintf("go-store-valid-test-%d.db", time.Now().UnixNano()))
-	t.Setenv("SQLITE_DB_URL", "file:"+dbPath)
-	t.Setenv("FILE_DB_ALIAS", "persist")
-
 	s := store.New(nil, true)
 	if s == nil {
 		t.Fatal("failed to create store")

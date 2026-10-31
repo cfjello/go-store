@@ -10,18 +10,18 @@ import (
 	// _ "github.com/mattn/go-sqlite3"
 )
 
-func initDB(db *sql.DB, reset bool) error {
+func initDB(db *sql.DB, reset bool, alias string) error {
 	// Drop existing tables and create new ones
-	err := dropTables(db, reset)
+	err := dropTables(db, reset, alias)
 	if err != nil {
 		return err
 	}
 
-	err = createTables(db, reset)
+	err = createTables(db, alias)
 	if err != nil {
 		return err
 	}
-	err = CreateIndexes(db, reset)
+	err = CreateIndexes(db, alias)
 	if err != nil {
 		return err
 	}
@@ -77,6 +77,9 @@ var CreateStmtSql = struct {
 			)`,
 }
 
+// GetPrefix returns the FILE_DB_ALIAS environment value. Deprecated inside
+// this package: schema init and statement preparation receive the alias
+// directly from New, and methods use DBService.DbAlias.
 func GetPrefix() string {
 	envSourced := os.Getenv("ENV_SOURCED")
 	if envSourced != "true" {
@@ -85,10 +88,11 @@ func GetPrefix() string {
 	return os.Getenv("FILE_DB_ALIAS")
 }
 
-func createTables(db *sql.DB, reset bool) error {
-
-	prefix := GetPrefix()
-
+// createTables creates the main schema tables and, when alias names an
+// attached persist database, the persist schema tables. Creation uses
+// IF NOT EXISTS and is unconditional: unlike drops it cannot lose data, and
+// a file main database must still have its schema after a restart.
+func createTables(db *sql.DB, alias string) error {
 	// Create tables using the CreateStmtSql struct
 	statements := []string{
 		CreateStmtSql.Meta,
@@ -102,9 +106,8 @@ func createTables(db *sql.DB, reset bool) error {
 		if err != nil {
 			return err
 		}
-		if prefix != "" && reset {
-			// Create prefixed tables if reset is true
-			_, err := db.Exec("CREATE TABLE IF NOT EXISTS " + prefix + "." + stmt)
+		if alias != "" {
+			_, err := db.Exec("CREATE TABLE IF NOT EXISTS " + alias + "." + stmt)
 			if err != nil {
 				return err
 			}
@@ -113,15 +116,16 @@ func createTables(db *sql.DB, reset bool) error {
 	return nil
 }
 
-func CreateIndexes(db *sql.DB, reset bool) error {
-	prefix := GetPrefix()
+// CreateIndexes creates the main schema indexes and, when alias names an
+// attached persist database, the persist schema indexes.
+func CreateIndexes(db *sql.DB, alias string) error {
 	// Create indexes for data table
 	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS main.idx_data_job_id ON data(job_id)`)
 	if err != nil {
 		return err
 	}
-	if reset {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_data_job_id ON data(job_id)`)
+	if alias != "" {
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + alias + `.idx_data_job_id ON data(job_id)`)
 		if err != nil {
 			return err
 		}
@@ -132,8 +136,8 @@ func CreateIndexes(db *sql.DB, reset bool) error {
 		return err
 	}
 
-	if reset {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_data_meta_key ON data(meta_key)`)
+	if alias != "" {
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + alias + `.idx_data_meta_key ON data(meta_key)`)
 		if err != nil {
 			return err
 		}
@@ -145,8 +149,8 @@ func CreateIndexes(db *sql.DB, reset bool) error {
 		return err
 	}
 
-	if reset {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + prefix + `.idx_job_meta_key ON job(meta_key)`)
+	if alias != "" {
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS ` + alias + `.idx_job_meta_key ON job(meta_key)`)
 		if err != nil {
 			return err
 		}
@@ -155,8 +159,12 @@ func CreateIndexes(db *sql.DB, reset bool) error {
 	return nil
 }
 
-func dropTables(db *sql.DB, reset bool) error {
-	prefix := GetPrefix()
+// dropTables drops tables only when reset is true. Drops must never run
+// unconditionally: the main database may be a persistent file database.
+func dropTables(db *sql.DB, reset bool, alias string) error {
+	if !reset {
+		return nil
+	}
 
 	// Get table names dynamically using reflection on CreateStmtSql struct
 	v := reflect.ValueOf(CreateStmtSql)
@@ -173,8 +181,8 @@ func dropTables(db *sql.DB, reset bool) error {
 		if err != nil {
 			return err
 		}
-		if reset {
-			_, err := db.Exec("DROP TABLE IF EXISTS " + prefix + "." + table)
+		if alias != "" {
+			_, err := db.Exec("DROP TABLE IF EXISTS " + alias + "." + table)
 			if err != nil {
 				return err
 			}

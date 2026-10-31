@@ -14,7 +14,9 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("SQLITE_DB_URL", "file:"+filepath.Join(dir, "test.db"))
+	// In-memory main database with the temp file attached as persist layer.
+	os.Setenv("SQLITE_DB_URL", ":memory:")
+	os.Setenv("SQLITE_ATTACH_URL", "file:"+filepath.Join(dir, "test.db"))
 	os.Setenv("FILE_DB_ALIAS", "persist")
 	pageDB = New(true)
 	code := m.Run()

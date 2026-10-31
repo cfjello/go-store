@@ -250,7 +250,7 @@ func (s *Store) loadElems(key, storeID string) ([]any, error) {
 	if _, err := s.Get(storeID, key, dest); err != nil {
 		return nil, fmt.Errorf("store: value %q store id %q: %w", key, storeID, err)
 	}
-	return elementsOf(unwrap(dest)), nil
+	return elementsOf(unwrap(s.storedPayload(dest))), nil
 }
 
 // restockLocked replaces the bound object with the store id returned by the
